@@ -1,7 +1,14 @@
 [project]
-name = "anomaly-detection"
+name = "zero-shot-forecasting"
 version = "0.1.0"
-description = "Add your description here"
+description = "Exploring time series foundation models (TSFMs): zero-shot forecasting, backtesting and anomaly detection on website visits with Timestral"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "matplotlib>=3.11.2",
+    "pandas>=3.1.0",
+    "timestral",
+]
+
+[tool.uv.sources]
+timestral = { git = "https://github.com/mistralai/timestral.git" }
