@@ -12,7 +12,7 @@ dataset.
 
 This project puts that promise to the test with
 [Timestral](https://mistral.ai/news/timestral/), Mistral's TSFM, on a small and noisy
-real dataset: daily page visits to my website. It covers three common tasks:
+real dataset: daily page visits to [my website](https://mourjo.me). It covers three common tasks:
 
 1. **Forecast** the visits for the next 30 days.
 2. **Backtest**: hide the last month, forecast it from the data before it, and score
@@ -53,7 +53,7 @@ uv run main.py [--csv FILE] [--pages N] [--model HF_ID] anomalies [--min-context
 
 ## The data
 
-`daily_pages.csv` is exported from my site analytics with `daily_pages.sql`: one row per
+`daily_pages.csv` is exported from the analytics of [my site](https://mourjo.me) with `daily_pages.sql`: one row per
 `(day, path)` with the number of visitors, from 2025-03-18 to 2026-10-25.
 
 It is small and noisy, which makes it a realistic test: the whole site gets about
