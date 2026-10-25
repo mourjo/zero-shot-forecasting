@@ -9,3 +9,6 @@ wheels/
 # Virtual environments
 .venv
 .mcp.json
+
+# IDE
+.idea/
