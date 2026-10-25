@@ -2,8 +2,8 @@
 
 A tour of Timestral's capabilities: what each one is, what it is good for, and how
 this project uses it (or why it doesn't). The terms are explained in
-[concepts.md](concepts.md); the code-level knobs are in
-[python-library.md](python-library.md).
+[01-concepts.md](01-concepts.md); the code-level knobs are in
+[03-python-library.md](03-python-library.md).
 
 Sources: Mistral's [announcement](https://mistral.ai/news/timestral/), the
 [GitHub repo](https://github.com/mistralai/timestral), and the source code of the

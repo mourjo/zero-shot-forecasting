@@ -24,11 +24,11 @@ the history as context and returns a probabilistic forecast directly.
 
 More documentation in [`docs/`](docs):
 
-- [concepts.md](docs/concepts.md): the statistical ideas (quantile, covariate,
+- [01-concepts.md](docs/01-concepts.md): the statistical ideas (quantile, covariate,
   multivariate, backtesting...) explained without assuming any statistics background.
-- [capabilities.md](docs/capabilities.md): what Timestral can and can't do, and which
+- [02-capabilities.md](docs/02-capabilities.md): what Timestral can and can't do, and which
   parts this project uses.
-- [python-library.md](docs/python-library.md): the `timestral` Python API, every
+- [03-python-library.md](docs/03-python-library.md): the `timestral` Python API, every
   setting you can change, and their measured effect on speed and accuracy.
 
 ## Quick start

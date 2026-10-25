@@ -4,8 +4,8 @@ This note explains the ideas behind Timestral, and behind this project, for some
 who has never studied statistics. It starts with what Timestral can do, then explains
 each term as it comes up. The examples use the website visits data from this repo.
 
-Related: [capabilities.md](capabilities.md) for a tour of what Timestral can do, and
-[python-library.md](python-library.md) for the Python API and its settings.
+Related: [02-capabilities.md](02-capabilities.md) for a tour of what Timestral can do, and
+[03-python-library.md](03-python-library.md) for the Python API and its settings.
 
 - [What Timestral is](#what-timestral-is)
 - [Time series](#time-series)

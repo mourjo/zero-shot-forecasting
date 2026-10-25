@@ -5,8 +5,8 @@ change, and what each one does. It is based on version **1.0.0** (from
 [GitHub](https://github.com/mistralai/timestral)), read from the installed source code.
 The timings and effects below were measured on this project's data, on a laptop CPU.
 
-For what the model can do in general, see [capabilities.md](capabilities.md). For the
-statistical terms, see [concepts.md](concepts.md).
+For what the model can do in general, see [02-capabilities.md](02-capabilities.md). For the
+statistical terms, see [01-concepts.md](01-concepts.md).
 
 - [Install](#install)
 - [The whole API in 10 lines](#the-whole-api-in-10-lines)
