@@ -12,3 +12,6 @@ wheels/
 
 # IDE
 .idea/
+
+# Downloaded OPSD data (not redistributed)
+data/

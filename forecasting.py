@@ -1,8 +1,9 @@
 """Thin wrapper around Timestral that speaks pandas.
 
 Timestral works on arrays shaped `(series, time)` and returns 21 quantiles per
-forecast step. Here every column of a daily frame is one series, and results come
-back as frames indexed by date so the rest of the demo never touches raw arrays.
+forecast step. Here every column of an hourly frame is one series (one country), and
+results come back as frames indexed by time so the rest of the demo never touches raw
+arrays.
 """
 
 from dataclasses import dataclass
@@ -12,15 +13,19 @@ import pandas as pd
 from timestral import TimestralForecaster
 
 DEFAULT_MODEL = "mistralai/Timestral-209M"
+STEP = pd.Timedelta(hours=1)
+# Keep every forecast within one "typical swing" of the range the history has seen. The
+# library default (10,000) is so loose that, on rare days such as Christmas with the holiday
+# covariate, the 99% quantile reached millions of MW. Medians are unaffected.
+QUANTILE_CAP = 1.0
 
 
 @dataclass
 class QuantileForecast:
     """Forecast for every series, one frame each: a lower/upper quantile, the median and the mean.
 
-    The median is the best single guess for one day, but on a sparse page most days
-    have 0 visits, so its median is 0 too. To answer "how many visits in total",
-    add up the means instead.
+    The median is the best single guess for one hour. To add hours up into energy
+    over a period, use the mean.
     """
 
     low: pd.DataFrame
@@ -33,75 +38,104 @@ class QuantileForecast:
 
 def load_forecaster(model_id: str = DEFAULT_MODEL) -> TimestralForecaster:
     # Downloads config.json + model.safetensors from Hugging Face once, then reads the local cache.
-    return TimestralForecaster.from_pretrained(model_id)
+    return TimestralForecaster.from_pretrained(model_id, quantile_real_cap_k=QUANTILE_CAP)
+
+
+def future_index(history: pd.DataFrame, horizon: int) -> pd.DatetimeIndex:
+    return pd.date_range(history.index[-1] + STEP, periods=horizon, freq=STEP, name=history.index.name)
 
 
 def forecast(
     forecaster: TimestralForecaster,
     history: pd.DataFrame,
     horizon: int,
+    known: pd.DataFrame | None = None,
     low: float = 0.1,
     high: float = 0.9,
 ) -> QuantileForecast:
-    """Forecast `horizon` days past the end of `history`, for every column at once."""
-    context = history.to_numpy().T  # (series, time)
-    first_weekday = np.full(len(history.columns), history.index[0].dayofweek)
-    result = _forecast(forecaster, context, first_weekday, horizon)
+    """Forecast `horizon` hours past the end of `history`, for every column at once.
 
-    future = pd.date_range(history.index[-1] + pd.Timedelta(days=1), periods=horizon, freq="D", name="day")
+    `known` is an optional known-future covariate, one column per series, covering the
+    history and the horizon. Timestral reads at most the last 32,768 hours of history.
+    """
+    future = future_index(history, horizon)
+    covariate = None
+    if known is not None:
+        covariate = known.loc[history.index[0]:future[-1], history.columns].to_numpy(copy=True).T
+    # copy=True: pandas returns read-only arrays, which PyTorch warns about.
+    result = _forecast(forecaster, history.to_numpy(copy=True).T, horizon, covariate)
 
-    def frame(level: float) -> pd.DataFrame:
-        # (series, 1 variate, horizon) -> (horizon, series)
-        return pd.DataFrame(result.quantile(level)[:, 0].T.numpy(), index=future, columns=history.columns)
+    def frame(values: np.ndarray) -> pd.DataFrame:
+        # (series, horizon) -> (horizon, series)
+        return pd.DataFrame(values.T, index=future, columns=history.columns)
 
-    mean = pd.DataFrame(_mean(result)[:, 0].T, index=future, columns=history.columns)
-    return QuantileForecast(frame(low), frame(0.5), frame(high), mean, low, high)
+    quantiles = [result.quantile(q)[:, 0].numpy() for q in (low, 0.5, high)]
+    return QuantileForecast(*map(frame, quantiles), frame(_mean(result)[:, 0]), low, high)
 
 
-def one_step_ahead(
+def rolling(
     forecaster: TimestralForecaster,
     history: pd.DataFrame,
-    min_context: int,
+    start: str | pd.Timestamp,
+    end: str | pd.Timestamp,
+    horizon: int = 24,
+    context: int = 2048,
+    gap: int = 0,
+    known: pd.DataFrame | None = None,
     low: float = 0.01,
     high: float = 0.99,
-    batch_size: int = 256,
+    batch_size: int = 64,
 ) -> QuantileForecast:
-    """For every day after the first `min_context` days, forecast that day from the days before it.
+    """Forecast `start`..`end` in blocks of `horizon` hours, each block only from earlier hours.
 
-    This is what a forecaster running every night would have predicted for the
-    next day, so it can be compared with what actually happened without the model
-    ever seeing the day it is judging. Each (day, series) pair becomes one row of
-    the batch: the context is everything before that day, left-padded with NaN
-    (which Timestral treats as missing) so all rows have the same length.
+    A last block that would run past `end` is left out.
+
+    Each block is forecast from the `context` hours that end `gap` hours before the
+    block starts. With the defaults this is what a forecaster running every midnight
+    would have predicted for the next 24 hours; with `gap=16` the forecast is made at
+    08:00 the day before, as early as the grid operators publish theirs. Either way the
+    model never sees the hours it is judging. Each (block, series) pair becomes one row
+    of the batch.
     """
-    values = history.to_numpy().T  # (series, time)
-    n_series, n_days = values.shape
-    length = n_days - 1  # the longest context, used to judge the last day
-    targets = range(min_context, n_days)
+    # Only whole blocks that end by `end`.
+    origins = pd.date_range(_in_tz(start, history), _in_tz(end, history) - horizon * STEP, freq=horizon * STEP)
+    positions = history.index.get_indexer(origins)
+    if (positions < context + gap).any() or positions[-1] + horizon > len(history):
+        raise ValueError(f"history must cover {context} hours before {origins[0]} and up to {origins[-1]}")
 
-    contexts = np.full((len(targets), n_series, length), np.nan)
-    first_weekday = np.empty((len(targets), n_series), dtype=int)
-    for row, day in enumerate(targets):
-        contexts[row, :, length - day:] = values[:, :day]
-        # Weekday of the first (padded) position, so the calendar covariate lines up with the real dates.
-        first_weekday[row] = (history.index[0].dayofweek + day - length) % 7
-    contexts = contexts.reshape(-1, length)
-    first_weekday = first_weekday.reshape(-1)
+    values = history.to_numpy().T  # (series, time)
+    covariate = None if known is None else known.loc[history.index, history.columns].to_numpy().T
+    made = positions - gap  # where each forecast is made: its context ends here
+    contexts = np.stack([values[:, m - context:m] for m in made])  # (blocks, series, context)
+    contexts = contexts.reshape(-1, context)
+    if covariate is not None:
+        covariate = np.stack([covariate[:, m - context:p + horizon] for m, p in zip(made, positions)])
+        covariate = covariate.reshape(-1, context + gap + horizon)
 
     quantiles = []
-    for start in range(0, len(contexts), batch_size):
-        batch = slice(start, start + batch_size)
-        result = _forecast(forecaster, contexts[batch], first_weekday[batch], horizon=1)
-        picked = [result.quantile(q)[:, 0, 0].numpy() for q in (low, 0.5, high)] + [_mean(result)[:, 0, 0]]
-        quantiles.append(np.stack(picked, axis=-1))
-    quantiles = np.concatenate(quantiles).reshape(len(targets), n_series, 4)
+    for first in range(0, len(contexts), batch_size):
+        batch = slice(first, first + batch_size)
+        result = _forecast(forecaster, contexts[batch], gap + horizon, None if covariate is None else covariate[batch])
+        # Keep the block itself, not the `gap` hours between the forecast and the block.
+        picked = [result.quantile(q)[:, 0, gap:].numpy() for q in (low, 0.5, high)] + [_mean(result)[:, 0, gap:]]
+        quantiles.append(np.stack(picked, axis=-1))  # (rows, horizon, 4)
 
-    days = history.index[min_context:]
+    n_series = len(history.columns)
+    # (blocks * series, horizon, 4) -> (blocks * horizon, series, 4): one row per forecast hour.
+    stacked = np.concatenate(quantiles).reshape(len(origins), n_series, horizon, 4)
+    stacked = stacked.transpose(0, 2, 1, 3).reshape(len(origins) * horizon, n_series, 4)
+    hours = history.index[positions[0]:positions[0] + len(origins) * horizon]
 
     def frame(i: int) -> pd.DataFrame:
-        return pd.DataFrame(quantiles[:, :, i], index=days, columns=history.columns)
+        return pd.DataFrame(stacked[:, :, i], index=hours, columns=history.columns)
 
     return QuantileForecast(frame(0), frame(1), frame(2), frame(3), low, high)
+
+
+def _in_tz(when: str | pd.Timestamp, history: pd.DataFrame) -> pd.Timestamp:
+    """A plain date like "2020-03-01" means that time in the history's time zone (UTC here)."""
+    when = pd.Timestamp(when)
+    return when.tz_localize(history.index.tz) if when.tz is None else when
 
 
 def _mean(result) -> np.ndarray:
@@ -116,16 +150,14 @@ def _mean(result) -> np.ndarray:
     return (np.diff(levels) * (q[..., 1:] + q[..., :-1]) / 2).sum(axis=-1)
 
 
-def _forecast(forecaster: TimestralForecaster, context: np.ndarray, first_weekday: np.ndarray, horizon: int):
-    """Run Timestral with the day of week as a known-future categorical covariate.
+def _forecast(forecaster: TimestralForecaster, context: np.ndarray, horizon: int, known: np.ndarray | None):
+    """Run Timestral, optionally with one known-future covariate per series.
 
-    The day of week is known for the forecast horizon too, which lets the model
-    pick up weekday/weekend patterns. Codes are 0 (Monday) to 6 (Sunday).
+    `known` is `(series, time + horizon)`. In this project it is the public-holiday
+    indicator: 0/1 rows, which Timestral recognises as an indicator by itself.
     """
-    steps = np.arange(context.shape[-1] + horizon)
-    weekday = (first_weekday[:, None] + steps[None, :]) % 7
     return forecaster.forecast(
         context,
         prediction_length=horizon,
-        categorical_known_covariates=weekday[:, None, :].astype(float),  # (series, 1 covariate, time + horizon)
+        known_covariates=None if known is None else known[:, None, :],  # (series, 1 covariate, time + horizon)
     )
