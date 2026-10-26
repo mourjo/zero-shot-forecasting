@@ -32,6 +32,17 @@ will continue**. You give it the past, for example the number of visits your web
 got each day, and it tells you what the next days will probably look like. It also
 says how sure it is.
 
+
+```mermaid
+flowchart LR
+    H["History of one or more series<br/>e.g. daily visits"] --> T["Timestral"]
+    C["Optional extra information<br/>e.g. day of week"] --> T
+    T --> Q["A range of likely values<br/>for every future step"]
+    Q --> U1["Best guess"]
+    Q --> U2["Uncertainty ranges"]
+    Q --> U3["Alert thresholds"]
+```
+
 In one sentence, from its announcement: Timestral is a *time-series foundation model
 for multivariate probabilistic forecasting, with past-only and known-future covariates*.
 That sentence is full of jargon. The rest of this note explains each piece:
@@ -108,6 +119,21 @@ The analogy: a traditional model is a tailor who measures you and sews a suit fr
 scratch. A foundation model is an experienced tailor who has seen millions of bodies
 and can tell, at a glance, what fits you.
 
+
+```mermaid
+flowchart LR
+    subgraph TR["Traditional: one model per dataset"]
+        direction TB
+        T1["Your history"] --> T2["Pick a method"] --> T3["Train it on your data"] --> T4["Tune it"] --> T5["Forecast"]
+    end
+    subgraph FM["Foundation model: trained once, used everywhere"]
+        direction TB
+        F1["Huge, varied collection<br/>of time series"] --> F2["Trained once<br/>by Mistral"] --> F3["Timestral"]
+        F4["Your history"] --> F3
+        F3 --> F5["Forecast<br/>zero-shot: no training on your data"]
+    end
+```
+
 Mistral also offers fine-tuning (further training on your own data) through Mistral
 Forge, for cases where zero-shot isn't good enough. This project doesn't need it.
 
@@ -121,10 +147,15 @@ Two numbers describe every forecast:
 - **Horizon** (or *prediction length*): how far into the future you ask it to look.
   This project asks for 30 days.
 
-```
-            context (what the model sees)        horizon (what it predicts)
-|--------------------------------------------|·······························|
-2025-03-18                          2026-10-25                     2026-11-24
+```mermaid
+gantt
+    title Context and horizon in this project
+    dateFormat YYYY-MM-DD
+    axisFormat %b %Y
+    section Past
+    context = what the model sees :done, 2025-03-18, 2026-10-26
+    section Future
+    horizon = what it predicts    :crit, 2026-10-26, 30d
 ```
 
 The further out the horizon, the less certain the forecast. Timestral predicts up to
@@ -221,11 +252,18 @@ example, rising humidity might help predict a temperature drop.
 This is different from forecasting **many independent series at once**, which
 Timestral also does. Its input has the shape `(series, variates, time)`:
 
-```
-                 ┌ variate 1 ─ 0 2 1 4 ...   ┐
-series 1 ────────┤                           ├  forecast together, may influence each other
-                 └ variate 2 ─ 5 3 6 2 ...   ┘
-series 2 ──────── variate 1 ─ 1 0 0 3 ...      forecast on its own
+```mermaid
+flowchart LR
+    subgraph IN["One forecast call: input shaped (series, variates, time)"]
+        subgraph S1["Series 1: multivariate"]
+            V1["variate 1: temperature"] <--> V2["variate 2: humidity"]
+        end
+        subgraph S2["Series 2: univariate"]
+            W1["variate 1: visits to /blog"]
+        end
+    end
+    S1 --> O1["Both variates forecast together,<br/>each can influence the other"]
+    S2 --> O2["Forecast on its own"]
 ```
 
 This project sends each page as **its own univariate series**, in one batch. Each page
@@ -252,6 +290,21 @@ Timestral sorts covariates by **when they are known**:
 | **Past-only** | the past only | number of social media mentions per day (you can't know next week's) | `past_covariates` |
 | **Known-future** | the past *and* the forecast horizon | day of the week, holidays, a planned publication date | `known_covariates` |
 
+
+```mermaid
+gantt
+    title What each input covers, for a 7-day forecast made on Oct 26
+    dateFormat YYYY-MM-DD
+    axisFormat %b %d
+    section Target
+    visits so far               :done, 2026-10-12, 2026-10-26
+    visits to forecast          :crit, 2026-10-26, 7d
+    section Past-only covariate
+    social media mentions       :done, 2026-10-12, 2026-10-26
+    section Known-future covariate
+    day of week and holidays    :done, 2026-10-12, 2026-11-02
+```
+
 Known-future covariates are especially useful: if you tell the model "a post goes live
 on Thursday", it can raise its forecast for Thursday. A past-only covariate can only
 help the model understand the history better.
@@ -267,11 +320,26 @@ Covariates also come in two kinds of **values**:
   "the average visits on Saturdays". This is called **target encoding**, and Timestral
   does it for you.
 
+
+```mermaid
+flowchart LR
+    A["Category code<br/>Saturday = 5"] --> B["Look up the average target<br/>on past Saturdays"] --> C["Number the model reads<br/>e.g. 2.4 visits"]
+```
+
 A covariate that is only 0 or 1 ("was there a launch today?") is an **indicator**.
 Timestral recognises these automatically.
 
 Covariates *condition* the forecast; they are not forecast themselves. The model reads
 them as hints and only outputs a forecast for the target.
+
+
+```mermaid
+flowchart LR
+    T["Target history<br/>daily visits"] --> M["Timestral"]
+    P["Past-only covariates<br/>known up to today"] --> M
+    K["Known-future covariates<br/>known up to today<br/>and over the horizon"] --> M
+    M --> O["Forecast of the target only"]
+```
 
 This project passes the day of the week as a known-future categorical covariate. On
 this data it made no measurable difference, because a handful of visits a day has
@@ -314,9 +382,14 @@ You can't know if a forecast for next month is good until next month is over. Bu
 3. Ask it to forecast the 30 days after the cutoff.
 4. Compare its forecast with what really happened in those 30 days.
 
-```
-          model sees this                cutoff      hidden: forecast vs reality
-|-------------------------------------------|···························|
+```mermaid
+gantt
+    title Backtest with cutoff 2026-09-25
+    dateFormat YYYY-MM-DD
+    axisFormat %b %Y
+    section Data
+    model sees this                    :done, 2025-03-18, 2026-09-26
+    hidden then forecast and compared  :crit, 2026-09-26, 30d
 ```
 
 The key rule: **the model must not see the period it is judged on.** If it did, it
@@ -326,6 +399,23 @@ and it makes results look far better than they really are.
 
 A single backtest is one sample: one month might be easy, the next one hard. Testing
 several cutoffs (`--cutoff`) gives a fairer picture.
+
+
+```mermaid
+gantt
+    title Several backtests, each with its own cutoff
+    dateFormat YYYY-MM-DD
+    axisFormat %b %Y
+    section Cutoff Mar 25
+    seen       :done, 2025-03-18, 2026-03-26
+    forecast   :crit, 2026-03-26, 30d
+    section Cutoff Jun 25
+    seen       :done, 2025-03-18, 2026-06-26
+    forecast   :crit, 2026-06-26, 30d
+    section Cutoff Sep 25
+    seen       :done, 2025-03-18, 2026-09-26
+    forecast   :crit, 2026-09-26, 30d
+```
 
 ## Measuring error, and baselines
 
@@ -356,6 +446,19 @@ This project uses **last week**: "the next days will look like the last 7 days, 
 and over". (Repeating the last full cycle like this is called a *seasonal naive*
 forecast.) If a model can't beat that, it isn't adding anything.
 
+
+```mermaid
+flowchart LR
+    H["Hidden month:<br/>actual visits"] --> E1["MAE of Timestral"]
+    F["Timestral forecast"] --> E1
+    H --> E2["MAE of the baseline"]
+    B["Baseline:<br/>repeat last week"] --> E2
+    E1 --> C{"Is Timestral's<br/>MAE lower?"}
+    E2 --> C
+    C -- "yes" --> Y["The model adds value"]
+    C -- "no" --> N["A simple rule does as well"]
+```
+
 In the backtest, Timestral clearly beats this baseline on the busier series (all
 pages, `/`) and roughly ties on the sparse pages. On pages with 0 or 1 visit on most
 days, nearly any guess close to 0 scores about the same.
@@ -373,6 +476,15 @@ is called **coverage**:
   surprised too often;
 - much more than 80% → **underconfident**: the ranges are too wide. It is safe, but
   less informative than it could be.
+
+
+```mermaid
+flowchart TD
+    A["Count the share of real values<br/>inside the 80% interval"] --> B{"Coverage?"}
+    B -- "much less than 80%" --> O["Overconfident:<br/>ranges too narrow"]
+    B -- "about 80%" --> W["Well calibrated"]
+    B -- "much more than 80%" --> U["Underconfident:<br/>ranges too wide"]
+```
 
 In this project's backtest, coverage was 87-97%: slightly too wide, which is the safer
 side to be on.

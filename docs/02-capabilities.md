@@ -55,6 +55,17 @@ between them. That was followed by a second stage on real and synthetic data wit
 4x longer context. Using generated data lets Mistral claim that no benchmark data
 leaked into training.
 
+
+```mermaid
+flowchart LR
+    S["Synthetic series<br/>trends, cycles, noise"] --> P1["Stage 1: pretraining<br/>context of 8,192 steps"]
+    P1 --> P2["Stage 2: post-training<br/>4x longer context"]
+    S --> P2
+    R["Real series"] --> P2
+    P2 --> W["Published weights<br/>5M, 28M, 123M, 209M"]
+    W --> Z["Your data:<br/>zero-shot forecast"]
+```
+
 **What it means for you.** No training pipeline, no hyperparameter search, no "fit"
 step. A new series, a new metric or a new customer can be forecast the moment data
 exists. This project's whole interaction with the model is
@@ -90,6 +101,16 @@ keeps the most recent part.
 appends that block's median to the context, and continues from there. There is no
 hard limit, but the further ahead, the more each block builds on earlier guesses
 rather than real data, and the wider the uncertainty should be.
+
+
+```mermaid
+flowchart LR
+    A["Context"] --> B["Predict the next block<br/>up to 1,024 steps"]
+    B --> C{"Whole horizon<br/>covered?"}
+    C -- "no" --> D["Append the block's median<br/>to the context"]
+    D --> B
+    C -- "yes" --> E["Full forecast"]
+```
 
 **What it means for you.** Long histories let the model see slow cycles (yearly
 seasonality needs at least a couple of years). The 30-day horizon in this project
@@ -130,6 +151,21 @@ Each page is a separate univariate series instead.
 forecast themselves. Timestral gives each row a role (target, past-only covariate or
 known-future covariate), and its attention only lets information flow **from
 covariates to targets**. A target's own future can't leak into its forecast.
+
+
+```mermaid
+flowchart LR
+    subgraph SER["Rows of one series"]
+        P["Past-only covariates"]
+        K["Known-future covariates"]
+        subgraph TG["Targets"]
+            V1["variate 1"] <--> V2["variate 2"]
+        end
+    end
+    P -- "informs" --> TG
+    K -- "informs" --> TG
+    TG --> O["Forecast of the targets only"]
+```
 
 | Kind | Known for | Examples |
 |---|---|---|
@@ -185,6 +221,17 @@ about **5 s with 28M** and **25 s with 209M**.
 to a smaller size when latency or volume matters (for example the anomaly replay:
 `--model mistralai/Timestral-28M`). A GPU works too (`device="cuda"`).
 
+
+```mermaid
+flowchart TD
+    A["Start with Timestral-209M"] --> B{"Fast enough?"}
+    B -- "yes" --> K1["Keep 209M"]
+    B -- "no" --> C["Try 123M<br/>within 0.2% of 209M's score"]
+    C --> D{"Fast enough?"}
+    D -- "yes" --> K2["Keep 123M"]
+    D -- "no" --> E["Try 28M or 5M<br/>and backtest to check accuracy holds"]
+```
+
 ## 9. Runs anywhere, offline included
 
 - The package is open source (Apache 2.0). The weights are on Hugging Face under a
@@ -205,6 +252,16 @@ uses, zero-shot is the intended starting point.
 ## What you build on top: anomaly detection and more
 
 Some uses aren't built-in features, but follow directly from probabilistic forecasts:
+
+
+```mermaid
+flowchart LR
+    Q["Probabilistic forecast<br/>21 quantiles per step"] --> A["Anomaly detection<br/>value outside 1%-99%"]
+    Q --> C["Capacity planning<br/>provision for a high quantile"]
+    Q --> B["Backtesting<br/>error and calibration"]
+    Q --> S["Scenario analysis<br/>change a known-future covariate"]
+    Q --> D["Drift detection<br/>more values outside the bands"]
+```
 
 - **Anomaly detection.** Forecast each step from the steps before it, then flag
   values outside a wide interval (such as 1%-99%). This is what `main.py anomalies`

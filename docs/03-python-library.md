@@ -55,6 +55,18 @@ The package exports five names: `TimestralForecaster` (what you use), `Forecast`
 it returns), and three lower-level ones you rarely need: `TimestralConfig`,
 `TimestralModel` and `load_model`.
 
+
+```mermaid
+flowchart LR
+    A["TimestralForecaster.from_pretrained(id)"] --> F["forecaster"]
+    C["context (B, V, T)<br/>+ optional covariates"] --> FC["forecaster.forecast(...)"]
+    F --> FC
+    FC --> R["Forecast"]
+    R --> Q["quantiles (B, V, H, 21)"]
+    R --> M["median (B, V, H)"]
+    R --> QL["quantile(level) (B, V, H)"]
+```
+
 ## Loading a model: `from_pretrained`
 
 ```python
@@ -84,6 +96,19 @@ TimestralForecaster.from_pretrained(
 | `local_files_only` | `False` | Never use the network; load from the cache only | Offline runs. The env var `HF_HUB_OFFLINE=1` does the same |
 
 The first load downloads two files once: `config.json` and `model.safetensors`.
+
+
+```mermaid
+flowchart TD
+    A["from_pretrained(path_or_repo_id)"] --> B{"Is it a local directory?"}
+    B -- "yes" --> L["Load config.json and<br/>model.safetensors from it"]
+    B -- "no" --> D{"local_files_only=True or<br/>HF_HUB_OFFLINE=1?"}
+    D -- "yes" --> CO["Load from the Hugging Face cache only<br/>error if it was never downloaded"]
+    D -- "no" --> G["Fetch from the Hub<br/>files already cached are reused"]
+    CO --> LM["Build the model on device, in float32"]
+    G --> LM
+    L --> LM
+```
 
 | Model | Download | Batch of 260 series x 590 days, 30-day horizon (laptop CPU) |
 |---|---|---|
@@ -136,6 +161,15 @@ of covariates.
 | `(T,)` | one series | `visits_per_day` |
 | `(B, T)` | `B` independent series | 5 pages, one row each, as in this project |
 | `(B, V, T)` | `B` series, each with `V` variates forecast jointly | 10 pumps x (vibration, temperature, pressure) |
+
+
+```mermaid
+flowchart LR
+    A["(T,)<br/>one series"] -- "read as (1, 1, T)" --> N["(B, V, T)"]
+    B["(B, T)<br/>B series"] -- "read as (B, 1, T)" --> N
+    C["(B, V, T)"] --> N
+    N --> O["quantiles<br/>(B, V, H, 21)"]
+```
 
 Rules worth knowing:
 
@@ -213,6 +247,21 @@ the quantiles; `_mean()` in `forecasting.py` shows one way.
 ## Behaviour switches: `symmetric_averaging` and `clip_nonnegative`
 
 Two options on `forecast()`, both on by default. Mistral calls the pair *clampsym*.
+
+
+```mermaid
+flowchart TD
+    A["context + covariates"] --> E["Target-encode categorical covariates"]
+    E --> P1["Model pass on the series"]
+    E -- "symmetric_averaging=True" --> P2["Model pass on the negated series<br/>covariates negated too"]
+    P2 --> FL["Negate back and<br/>mirror the quantiles"]
+    P1 --> AV["Average the two passes"]
+    FL --> AV
+    AV --> G{"clip_nonnegative=True and<br/>history all >= 0?"}
+    G -- "yes" --> CL["Clamp the forecast at 0"]
+    G -- "no" --> R["Forecast"]
+    CL --> R
+```
 
 ### `symmetric_averaging=True`
 
