@@ -1,17 +1,19 @@
 # Anomaly detection with a forecasting model
 
-How this project finds unusual days in the website visits, why it works this way, and
-how to tune it or reuse it on other data, such as server metrics. Like
+How this project finds unusual days in European electricity demand, why it works this
+way, and how to tune it or reuse it on other data. Like
 [01-concepts.md](01-concepts.md), it assumes no statistics background.
 
 - [What an anomaly is](#what-an-anomaly-is)
 - [Ways to detect anomalies](#ways-to-detect-anomalies)
 - [The idea: an anomaly is a surprise](#the-idea-an-anomaly-is-a-surprise)
 - [The pipeline](#the-pipeline)
-- [Step 1: forecast each day without seeing it](#step-1-forecast-each-day-without-seeing-it)
-- [Step 2: compare reality with the forecast](#step-2-compare-reality-with-the-forecast)
-- [Step 3: filter and rank](#step-3-filter-and-rank)
+- [Step 1: forecast each block without seeing it](#step-1-forecast-each-block-without-seeing-it)
+- [The horizon decides what you can see](#the-horizon-decides-what-you-can-see)
+- [Step 2: compare every hour with its band](#step-2-compare-every-hour-with-its-band)
+- [Step 3: from hours to days to episodes](#step-3-from-hours-to-days-to-episodes)
 - [How the code does it](#how-the-code-does-it)
+- [Telling the model what is normal: the holiday covariate](#telling-the-model-what-is-normal-the-holiday-covariate)
 - [Choosing the band: false alarms vs missed anomalies](#choosing-the-band-false-alarms-vs-missed-anomalies)
 - [Results on this data](#results-on-this-data)
 - [Pitfalls](#pitfalls)
@@ -22,16 +24,16 @@ how to tune it or reuse it on other data, such as server metrics. Like
 An **anomaly** (or *outlier*) is a data point that doesn't fit the pattern of the rest.
 There are three broad kinds:
 
-| Kind | What it is | Website example | Server example |
-|---|---|---|---|
-| **Point** | One value far from normal | 50 visits on a day that usually gets 3 | A latency spike to 4 s |
-| **Contextual** | A value that is normal in general, but not at *this* time | 20 visits on a Sunday at 4 am | Peak-hour traffic at midnight |
-| **Collective** | A run of values that is odd *together*, though each one alone looks fine | A week of exactly 0 visits: the tracking script is broken | A metric that goes perfectly flat |
+| Kind | What it is | Electricity example |
+|---|---|---|
+| **Point** | One value far from normal | One day with demand 20% below normal: an unusual holiday, a data error |
+| **Contextual** | A value that is normal in general, but not at *this* time | Sunday-level demand on a Tuesday |
+| **Collective** / level shift | A run of values that is odd *together*, though each looks fine next to its neighbours | Weeks of demand 10-20% lower, as in the spring 2020 lockdowns |
 
-This project looks for **point anomalies**: single days with far more (or far fewer)
-visits than expected. A forecaster also catches many contextual ones for free, because
-"expected" already takes time patterns into account. Collective anomalies need
-extra rules; see [pitfalls](#pitfalls).
+A forecaster handles contextual anomalies for free, because "expected" already
+includes the time of day, the day of the week and the season. Point anomalies are
+easy. Level shifts are the hard part, and the reason the
+[horizon](#the-horizon-decides-what-you-can-see) matters so much.
 
 ## Ways to detect anomalies
 
@@ -39,9 +41,9 @@ From simplest to most capable:
 
 | Approach | How it works | Weakness |
 |---|---|---|
-| **Fixed threshold** | "Alert above 30 visits" | Doesn't adapt: too sensitive on busy months, blind on quiet ones |
-| **Statistical rule** | "Alert beyond 3 standard deviations from the average" (a *z-score*) | Assumes values are spread symmetrically; ignores trends and weekly cycles |
-| **Seasonal decomposition** | Split the series into trend + weekly cycle + leftover; alert on big leftovers | Needs the cycle length set by hand, and enough clean history |
+| **Fixed threshold** | "Alert below 40 GW" | Doesn't adapt: 40 GW is normal on a Sunday night and alarming on a Tuesday noon |
+| **Statistical rule** | "Alert beyond 3 standard deviations from the average" (a *z-score*) | Assumes values are spread symmetrically; ignores the daily, weekly and yearly cycles |
+| **Seasonal decomposition** | Split the series into trend + cycles + leftover; alert on big leftovers | Needs the cycles set by hand, and enough clean history |
 | **Machine-learning detector** | e.g. an isolation forest, trained on your data | Needs training, tuning and retraining per dataset |
 | **Forecast-based** (this project) | Predict each value, alert when reality falls far outside the prediction | Only as good as the forecaster |
 
@@ -55,173 +57,226 @@ the easy option instead of the expensive one.
 Instead of defining "abnormal" directly, define "normal" with a forecast, and call
 anything far outside it an anomaly.
 
-A probabilistic forecast doesn't give one number for tomorrow; it gives a range, with
+A probabilistic forecast doesn't give one number for each hour; it gives a range, with
 probabilities (see [quantiles](01-concepts.md#probabilistic-forecasts-quantiles-and-intervals)).
 This project uses the **1% and 99% quantiles**:
 
-- the **99% quantile** (`high`): only about 1 day in 100 should be above it;
-- the **1% quantile** (`low`): only about 1 day in 100 should be below it.
+- the **99% quantile** (`high`): only about 1 hour in 100 should be above it;
+- the **1% quantile** (`low`): only about 1 hour in 100 should be below it.
 
-Between them is a **98% band**. A day outside it is one the model considered very
+Between them is a **98% band**. An hour outside it is one the model considered very
 unlikely: a surprise.
 
 ```mermaid
 flowchart LR
-    A["Actual visits for a day"] --> C{"Where does it fall?"}
-    F["Forecast band for that day<br/>low = 1% quantile<br/>high = 99% quantile"] --> C
-    C -- "above high" --> S["Spike"]
+    A["Actual load for an hour"] --> C{"Where does it fall?"}
+    F["Forecast band for that hour<br/>low = 1% quantile<br/>high = 99% quantile"] --> C
+    C -- "above high" --> S["Above the band"]
     C -- "between low and high" --> N["Normal"]
-    C -- "below low" --> D["Drop"]
+    C -- "below low" --> D["Below the band"]
 ```
 
-The band adapts by itself: it rises in busy periods, falls in quiet ones, and follows
-any weekly rhythm the model has picked up. That is the main advantage over a fixed
-threshold.
+The band adapts by itself: it follows the daily and weekly rhythm, the season, and
+public holidays when the model is told about them.
 
 ## The pipeline
 
 ```mermaid
 flowchart TD
-    A["daily_pages.csv<br/>day, path, visitors"] --> B["load_daily_visits<br/>one column per series,<br/>one row per day"]
-    B --> C["one_step_ahead<br/>forecast every day<br/>from the days before it"]
-    C --> D["Forecast band per day and series<br/>1% / 50% / 99% quantiles"]
-    B --> E["Actual visits"]
-    D --> F["Compare actual with band"]
+    A["OPSD hourly load<br/>5 countries"] --> B["load_power_data<br/>+ holiday_indicator"]
+    B --> C["rolling<br/>forecast every block (a week by default)<br/>from the 2,048 hours before it"]
+    C --> D["Forecast band per hour and country<br/>1% / 50% / 99% quantiles"]
+    B --> E["Actual load"]
+    D --> F["Per hour: inside or outside the band?"]
     E --> F
-    F --> G["Filters<br/>min_context, min_excess"]
-    G --> H["anomalies.csv<br/>anomalies.png"]
+    F --> G["Per day: at least 6 hours outside?<br/>= anomalous day"]
+    G --> H["Consecutive anomalous days<br/>= episodes"]
+    H --> I["anomalies-168h.csv<br/>anomalies-168h.png"]
 ```
 
-## Step 1: forecast each day without seeing it
+## Step 1: forecast each block without seeing it
 
-The most important rule: **the forecast for a day must not see that day.**
+The most important rule: **the forecast for a period must not see that period.**
 
-Suppose you instead fit the model to the whole history at once and compared each day
-with the model's view of it. A spike would be part of what the model looks at, so it
-would pull the "expected" value up towards itself and partly hide. Statisticians call
-using information you wouldn't have had at the time **look-ahead** or **leakage**.
+Suppose you instead fit a model to the whole history and compared each day with the
+model's view of it. An unusual day would be part of what the model looks at, so it
+would pull the "expected" value towards itself and partly hide. Using information you
+wouldn't have had at the time is called **look-ahead** or **leakage**.
 
-So every day is judged by a forecast made only from the days *before* it. This is
-called **one-step-ahead** (or *walk-forward*) forecasting. It reproduces exactly what a
-forecaster running every night would have predicted for the next day.
+So the past is replayed block by block. Each block (a week by default) is forecast
+only from the 2,048 hours (~12 weeks) *before* it. This is called **rolling** (or
+*walk-forward*) forecasting. It reproduces exactly what a forecaster running every
+Monday at midnight (UTC) would have predicted for the week ahead.
 
 ```mermaid
 gantt
-    title Each day is judged by a forecast made only from earlier days
+    title Each week is judged by a forecast made only from earlier hours
     dateFormat YYYY-MM-DD
     axisFormat %b %d
-    section Judge Aug 29
-    history the model sees (from 2025-03-18) :done, 2026-08-20, 2026-08-29
-    forecast vs actual                      :crit, 2026-08-29, 1d
-    section Judge Aug 30
-    history the model sees (from 2025-03-18) :done, 2026-08-20, 2026-08-30
-    forecast vs actual                      :crit, 2026-08-30, 1d
-    section Judge Aug 31
-    history the model sees (from 2025-03-18) :done, 2026-08-20, 2026-08-31
-    forecast vs actual                      :crit, 2026-08-31, 1d
+    section Judge week of Mar 2
+    history the model sees :done, 2020-02-17, 2020-03-02
+    forecast vs actual     :crit, 2020-03-02, 7d
+    section Judge week of Mar 9
+    history the model sees :done, 2020-02-17, 2020-03-09
+    forecast vs actual     :crit, 2020-03-09, 7d
+    section Judge week of Mar 16
+    history the model sees :done, 2020-02-17, 2020-03-16
+    forecast vs actual     :crit, 2020-03-16, 7d
 ```
 
-Each judged day gets a history one day longer than the previous one. The first 56 days
-(`--min-context`) are never judged, because there isn't enough history to know what
-normal looks like.
+(The history bars are shortened in the chart; each really covers the 2,048 hours,
+~12 weeks, before its week.)
 
-## Step 2: compare reality with the forecast
+## The horizon decides what you can see
 
-For each day and series, two distances are computed:
+How far ahead each forecast looks, the **horizon**, changes which anomalies the
+detector can see at all. This is the most important lesson from this dataset.
 
-```
-spike = actual - high     positive when the day is above the band
-drop  = low - actual      positive when the day is below the band
-```
+The lockdowns didn't happen in one day: demand fell over one to two weeks as measures
+tightened. Compare two detectors:
 
-Worked example, the largest anomaly found (site-wide total, 2026-08-31):
-
-| actual | low (1%) | median | high (99%) | spike | drop |
-|---|---|---|---|---|---|
-| 50 | 0 | 1.98 | 19.35 | 50 - 19.35 = **30.65** | 0 - 50 = -50 |
-
-The spike distance is positive, so it's above the band. The size of the surprise,
-`excess`, is the larger of the two distances: 30.65 visits.
-
-## Step 3: filter and rank
-
-Two filters keep the result useful on small numbers:
+- **Day-ahead** (`--horizon 24`): every midnight, forecast the next 24 hours. Each day
+  is judged against a forecast that already saw yesterday's lower demand, so every
+  step of the decline looks like a small, unremarkable change.
+- **Week-ahead** (`--horizon 168`, the default): every Monday, forecast the whole week.
+  The first lockdown week is judged against a forecast made *before* the decline, so
+  it stands out.
 
 ```mermaid
 flowchart TD
-    A["A day of one series"] --> B{"Has this series at least<br/>min_context = 56 days<br/>of its own history?"}
-    B -- "no" --> X["Skip: not enough history<br/>e.g. the day /talks went live"]
-    B -- "yes" --> C{"actual - high >= min_excess = 2?"}
-    C -- "yes" --> S["Spike"]
-    C -- "no" --> D{"low - actual >= min_excess = 2?"}
-    D -- "yes" --> P["Drop"]
-    D -- "no" --> N["Normal: not reported"]
+    A["Lockdown: demand falls 10-20%<br/>over 1-2 weeks"] --> B{"Detector horizon"}
+    B -- "day-ahead (24 h)" --> C["Each day's forecast already saw<br/>yesterday's lower demand"]
+    C --> C2["Small surprise every day:<br/>not flagged"]
+    B -- "week-ahead (168 h)" --> D["The week's forecast was made<br/>before the decline"]
+    D --> D2["Big surprise for the first week:<br/>flagged"]
+    D2 --> D3["The next week's forecast already saw<br/>the new level: normal again"]
 ```
 
-- **`--min-context`, per series.** A page added later (like `/talks`, in April 2026)
-  needs 56 days of its *own* history. Otherwise its first visits would count as
-  anomalies, since the model had only seen "nothing" before.
-- **`--min-excess`.** A day must be at least 2 visits outside the band. On a page whose
-  99% line is 0.4 visits, a single visit is technically outside the band, but nobody
-  cares.
+What each detector flagged around the lockdowns (both with the holiday covariate):
 
-Finally, all anomalies are sorted by `excess`, biggest surprise first.
+| Country | Lockdown starts | Day-ahead (24 h) | Week-ahead (168 h) |
+|---|---|---|---|
+| Italy | 10 March | nothing | 13-15 March, 9.8-12.4% below forecast |
+| Spain | 15 March | nothing | 19 March, 11.4% below |
+| France | 17 March | nothing | 19 March, 19.9% below |
+| Great Britain | 23 March | nothing | 26 March, 13.4% below |
+| Germany | 22 March | nothing | nothing (the drop was smaller, ~9%, and gradual) |
+
+Overall, the day-ahead detector flagged 29 days over the year and the week-ahead one
+52: the week-ahead bands are wider, but slow shifts and multi-day holidays such as
+Christmas week stand out more.
+
+Neither is "right". Day-ahead is what a control room needs: tight bands, sharp one-day
+events, such as the daylight-saving switches or France's reopening day. Week-ahead is
+better for shifts that build up over days. A real system could run both.
+
+## Step 2: compare every hour with its band
+
+For each hour and country, the code checks whether the actual load is below the 1%
+line or above the 99% line. Then, per day, it counts those hours, and compares the
+day's total energy with the forecast's total (the sum of the hourly means):
+
+```
+deviation % = (actual daily energy - expected daily energy) / expected daily energy x 100
+```
+
+Worked example, the largest lockdown day found (France, Thursday 19 March 2020, two
+days into the lockdown), from the week-ahead forecast made on Monday 16 March:
+
+| Hours below the 1% line | Hours above the 99% line | Actual energy | Expected energy | Deviation |
+|---|---|---|---|---|
+| 10 of 24 | 0 | 1,133,107 MWh | 1,414,085 MWh | -19.9% |
+
+Ten hours below the band (more than the 6 required), none above: an anomalous day,
+of kind "drop".
+
+## Step 3: from hours to days to episodes
+
+One hour outside a 98% band happens by chance about 2% of the time, so single hours
+aren't worth reporting. The rules:
+
+```mermaid
+flowchart TD
+    A["A day of one country"] --> B{"At least min_hours = 6<br/>of its 24 hours outside the band?"}
+    B -- "no" --> N["Normal: not reported"]
+    B -- "yes" --> C{"More hours below<br/>than above?"}
+    C -- "yes" --> D["Anomalous day: drop"]
+    C -- "no" --> S["Anomalous day: spike"]
+    D --> E["Consecutive anomalous days<br/>of the same country and kind<br/>= one episode"]
+    S --> E
+```
+
+- **`--min-hours 6`**: a quarter of the day must be outside the band. Raise it for
+  fewer, stronger alerts.
+- **Episodes** group consecutive days, so Italy's 13-15 March is one line, not three.
 
 ## How the code does it
 
-Two functions do the work: `one_step_ahead()` in `forecasting.py` (step 1) and
+Two functions do the work: `rolling()` in `forecasting.py` (step 1) and
 `run_anomalies()` in `main.py` (steps 2 and 3).
 
-### Batching: one forecast call instead of thousands
+### Batching: one forecast call for a whole year
 
-Step 1 needs a separate forecast for each of about 530 days, for each of 5 series:
-about 2,650 forecasts. Calling the model 2,650 times would be slow. Instead,
-`one_step_ahead` builds them all as **rows of one big batch**, each row holding the
-history *before* its day.
-
-The rows have different lengths (the history before day 56 is shorter than the history
-before day 586), but a batch needs equal lengths. So shorter rows are **padded on the
-left with NaN**, which Timestral treats as "missing", not as zero:
+A year of week-ahead forecasts for 5 countries is 52 x 5 = 260 forecasts; day-ahead,
+it is 366 x 5 = 1,830. Calling the model that many times would be slow. Instead,
+`rolling()` builds them all as **rows of one big batch**: each row holds the 2,048
+hours before its block.
 
 ```
-days counted from 0; v0 = visits on day 0 (2025-03-18)
-
-row for day  56:  NaN NaN NaN ... NaN  v0  v1 ... v55        -> forecast day  56
-row for day  57:  NaN NaN NaN ... v0   v1  v2 ... v56        -> forecast day  57
-...
-row for day 586:  v0  v1  v2  ...                    v585    -> forecast day 586
-                  └──────────── 586 columns ────────────┘
+row for DE, week of Mon 2020-03-02:  the 2,048 hours before 2020-03-02  -> forecast 168 hours
+row for DE, week of Mon 2020-03-09:  the 2,048 hours before 2020-03-09  -> forecast 168 hours
+...                                  └── every row: the same 2,048-hour window ──┘
 ```
+
+Every row has the same length, so no padding is needed.
 
 ```mermaid
 flowchart LR
-    A["history<br/>5 series x 587 days"] --> B["For each day d from 56 to 586:<br/>copy values before d,<br/>NaN-pad on the left"]
-    B --> C["~2,650 rows x 586 columns"]
-    C --> D["Chunks of 256 rows"]
-    D --> E["Timestral forecast<br/>horizon = 1 day"]
+    A["load<br/>5 countries x 50,400 hours"] --> B["One block start per week:<br/>copy the 2,048 hours before it"]
+    B --> C["260 rows x 2,048 hours<br/>+ holiday rows covering<br/>2,048 + 168 hours"]
+    C --> D["Chunks of 64 rows"]
+    D --> E["Timestral forecast<br/>horizon = 168 hours"]
     E --> F["Keep 1%, 50%, 99% quantiles<br/>and the mean"]
-    F --> G["Reshape back to<br/>days x series tables"]
+    F --> G["Reshape back to<br/>hours x countries tables"]
 ```
 
-Line by line:
+`rolling()` line by line:
 
 | Code | What it does |
 |---|---|
-| `values = history.to_numpy().T` | The data as an array: one row per series, one column per day |
-| `length = n_days - 1` | The longest history needed: everything before the last day |
-| `targets = range(min_context, n_days)` | The days to judge; the first 56 are skipped |
-| `contexts = np.full(..., np.nan)` | An all-NaN array: one row per (day, series) |
-| `contexts[row, :, length - day:] = values[:, :day]` | Copy the days *before* `day` into the right end of the row; the rest stays NaN |
-| `first_weekday[row] = ...` | The weekday of each row's first column, so the day-of-week covariate lines up with real dates |
-| `contexts.reshape(-1, length)` | Flatten (days x series) into one list of rows |
-| `for start in range(0, len(contexts), batch_size)` | Send 256 rows at a time, to keep memory in check |
-| `_forecast(..., horizon=1)` | Forecast one day ahead for every row in the chunk |
-| `result.quantile(q)` for 1%, 50%, 99%, plus `_mean` | Keep only the four numbers needed per row |
-| `reshape(len(targets), n_series, 4)` | Back to (days x series), one table per quantile |
+| `origins = pd.date_range(start, end - horizon, freq=horizon)` | The start of every block; a last block that would run past `end` is left out |
+| `positions = history.index.get_indexer(origins)` | Where each block starts, as a row number in the data |
+| `made = positions - gap` | Where each forecast is made: `gap` hours before its block (0 here; 16 in the backtest, to match the grid operators' publishing time) |
+| `values[:, m - context:m]` | The `context` hours before each forecast, for every country |
+| `covariate[:, m - context:p + horizon]` | The holiday flags over the history *and* the block: they are known in advance |
+| `for first in range(0, len(contexts), batch_size)` | Send 64 rows at a time, to keep memory in check |
+| `result.quantile(q)[:, 0, gap:]` | Keep the block's hours, for the 1%, 50% and 99% quantiles, plus `_mean` |
+| `transpose(0, 2, 1, 3).reshape(...)` | From (blocks x countries x hours) back to one row per hour, one column per country |
 
-The result is a `QuantileForecast`: tables `low`, `median`, `high` and `mean`, indexed
-by day, one column per series. `run_anomalies` then lines these up with the actual
-visits and applies steps 2 and 3.
+`run_anomalies()` then lines these up with the actual load, counts the hours outside
+the band per day (`resample("D")`), flags days with at least `min_hours`, groups them
+into episodes (`_episodes()`) and writes `output/anomalies-<horizon>h.csv` and `.png`.
+
+## Telling the model what is normal: the holiday covariate
+
+Public holidays look exactly like anomalies: demand drops 15-30% for a day. Without
+help, the detector flags them every time. Passing each country's public holidays as a
+known-future covariate tells the model "this day is special", so it lowers its
+forecast and the day is no longer a surprise.
+
+| | Week-ahead, no holidays | Week-ahead, with holidays | Day-ahead, no holidays | Day-ahead, with holidays |
+|---|---|---|---|---|
+| Anomalous days in the year | 70 | 52 | 39 | 29 |
+| Hours below the 1% line before the pandemic | 2.6% | 1.2% | 0.9% | 0.7% |
+
+Days that disappear with the covariate (week-ahead) include New Year's Day, Good
+Friday, 1 May, Ascension Day, German Unity Day, 14 July, Armistice Day and All Saints
+in Italy and Spain. Not every holiday is fully absorbed: Easter Monday in Italy is
+still flagged. What remains is mostly what
+a national calendar doesn't know: Christmas week and other "bridge" days, regional
+holidays such as Corpus Christi (11 June) and All Saints (1 November) in Germany,
+England-only bank holidays in Great Britain (31 August), and the August shutdowns in
+Italy and Spain.
 
 ## Choosing the band: false alarms vs missed anomalies
 
@@ -230,106 +285,117 @@ Every detector trades off two mistakes:
 - a **false alarm** (*false positive*): flagging a day that was actually normal;
 - a **missed anomaly** (*false negative*): not flagging a day that really was odd.
 
-The band width sets the balance. If the model's quantiles are accurate (*calibrated*),
-a band from 1% to 99% leaves about 2% of perfectly normal days outside it, by
-definition. At one value per day, that's about 7 false alarms per series per year;
-at one value per minute, it's about 29 per series per *day*.
+If the model's quantiles are accurate (*calibrated*), a band from 1% to 99% leaves
+about 2% of perfectly normal hours outside it, by definition. Requiring 6 hours out of
+24 turns that into very few false alarms, because chance misses are scattered, while
+real anomalies affect whole days.
 
-| Band | Normal days outside it | Use when |
+### Is the band honest here?
+
+`main.py anomalies` checks this itself: over the months before the pandemic (October
+2019 to February 2020), it counts how often actual load fell above the 99% line and
+below the 1% line. About 1% each is expected.
+
+| Detector (with holidays) | Hours above the 99% line | Hours below the 1% line |
 |---|---|---|
-| 10%-90% | ~20% | Exploring; you want to see everything a bit unusual |
-| 1%-99% (this project) | ~2% | Daily data reviewed by a person |
-| 1%-99% plus `min_excess` | fewer | Small counts, where tiny excesses are noise |
-| Wider than the model offers | n/a | Timestral's widest quantiles are 1% and 99%; for stricter alerts, raise `min_excess` or require several anomalous steps in a row |
+| Week-ahead | 0.6% | 1.2% |
+| Day-ahead | 0.7% | 0.7% |
+
+Close to 1% on both sides: on this data, Timestral's outer quantiles mean what they say
+(with the cap described under [pitfalls](#pitfalls)).
 
 Ways to tune, in `main.py anomalies`:
 
 | Knob | Fewer alerts | More alerts |
 |---|---|---|
-| Band (`low`/`high` in `one_step_ahead`) | 1%-99% | 5%-95%, 10%-90% |
-| `--min-excess` | raise | lower to 0 |
-| `--min-context` | raise | lower (but then early days are judged on little history) |
-
-### Is the band honest here?
-
-You can check calibration on the replay itself: count how often the real value landed
-above the 99% line. If the model is calibrated, that should happen on about 1% of days.
-
-| Series | Days checked | Days above the 99% line |
-|---|---|---|
-| all pages | 531 | 7 |
-| `/` | 531 | 6 |
-| `/blog` | 531 | 5 |
-| `/cv` | 530 | 4 |
-| `/talks` | 123 | 2 |
-| **total** | **2,246** | **24 (1.07%)** |
-
-1.07% against an expected 1%: on this data, Timestral's 99% line means what it says.
-Of those 24 days, `--min-excess 2` keeps the 12 that were at least 2 visits above it.
+| Band (`low`/`high` in `rolling()`) | 1%-99% (Timestral's widest) | 5%-95%, 10%-90% |
+| `--min-hours` | raise (e.g. 12) | lower (e.g. 3) |
+| `--horizon` | 24 (adapts quickly, misses slow shifts) | 168 (sees slow shifts and multi-day holidays) |
+| Holiday covariate | on (default) | `--no-holidays` |
 
 ## Results on this data
 
-12 anomalies over 2025-05-13 to 2026-10-25, all spikes:
+Week-ahead, with holidays (the default), from 30 September 2019 to 27 September 2020:
+52 anomalous days in 28 episodes.
 
-![anomalies](../output/anomalies.png)
+![anomalies](../output/anomalies-168h.png)
 
-The orange band is the 98% band the model expected for each day; red dots are
-anomalies. Looking up what happened on the biggest ones:
+Each panel shows a country's daily energy: blue is actual, orange is what the
+week-ahead forecast expected, red dots are anomalous days, and the dashed line is the
+start of the lockdown. The orange line tracks the blue one closely except around
+holidays, and it drops with the lockdown one week late, which is exactly how a rolling
+forecaster behaves.
 
-| Day | Series | Visits | Band top | What happened |
-|---|---|---|---|---|
-| 2026-08-31 | all pages | 50 | 19.35 | 44 different pages got ~1 visit each: looks like a crawler. No single page looks odd, so only the total catches it |
-| 2025-12-19 | all pages, `/` | 34 | 15.38 | The home page jumped to 21 visits, along with `/blog`, `/talks`, `/cv` |
-| 2026-07-16 | all pages | 32 | 21.75 | 27 visits to one old post on writing with Obsidian: probably shared somewhere |
-| 2026-08-01 | all pages | 37 | 27.93 | The day a new post was published |
-| 2026-09-15 | `/` | 21 | 12.41 | Home page jump, together with `/blog`, `/talks`, `/slides`, `/cv` |
+Looking up what happened on the most notable episodes:
+
+| Days | Country | Deviation | What happened |
+|---|---|---|---|
+| 13-15 Mar 2020 | Italy | -11% | The national lockdown, from 10 March |
+| 19 Mar 2020 | France | -20% | The lockdown, from 17 March |
+| 19 Mar 2020 | Spain | -11% | The state of alarm, from 15 March |
+| 26 Mar 2020 | Great Britain | -13% | The stay-at-home order, from 23 March |
+| 11-14 May 2020 | France | +11% | The end of France's first lockdown on 11 May |
+| 23-25 Dec 2019 | Germany, Italy, Spain | -15% to -19% | Christmas week, beyond the national holidays |
+| 3-6 and 10-11 Aug 2020 | Italy | -12% to -13% | August holidays, when much of industry closes |
+| 7-10 Nov 2019 | France | +17% | Probably an early cold spell: France heats largely with electricity (not checked against weather data) |
+| 8 Dec 2019 | Great Britain | -16% | Not obvious from the data; the grid operator forecast this day almost exactly, so it was probably weather-driven |
 
 Two lessons from the table:
 
-- **Watch the total and the parts.** The crawler on 2026-08-31 is invisible on any
-  single page but obvious in the site total. A single viral page is the opposite: clear
-  on that page, diluted in the total.
-- **The detector says *that*, not *why*.** Every explanation above came from a human
-  looking at the raw data afterwards.
+- **The detector says *that*, not *why*.** Every explanation above came from a person
+  checking the dates afterwards, and two are educated guesses.
+- **"Unusual for Timestral" is not the same as "unusual".** Some flagged days were
+  expected by forecasters who see the weather. A better-informed model (with a
+  temperature covariate) would flag fewer, more interesting days.
+
+The day-ahead detector (`--horizon 24`, `output/anomalies-24h.png`) flags 29 single
+days instead, mostly sharp one-day events: the daylight-saving switches (27 October
+2019 in France, 29 March 2020 in Germany and France), France's reopening day (11 May 2020),
+days right after holidays, and a Friday in Great Britain (22 May 2020) when demand was
+20% below forecast all day. The grid operator missed that one too (by ~12%); a sunny,
+windy day reducing demand on the transmission grid is a plausible cause, but it isn't
+verified here.
 
 ## Pitfalls
 
-- **Masking after a spike.** A spike becomes part of the history for the following
-  days, and the model widens its band, expecting after-shocks. A second spike soon
-  after the first can then go unflagged. This happens in this data: on 2026-08-31 the 99% line was
-19 visits; the day after the spike it was 67, and a week later, on 2026-09-08, still 38.
-That day had 20 visits, which the pre-spike band would have flagged but the widened
-band didn't. Whether that is a bug or a feature depends on your goal: spikes often do
-come in clusters.
-- **Drops can't be seen in sparse data.** With a few visits a day, the 1% line is
-  almost always 0, and a count can't go below 0. In the replay, the 1% line was above 0 on only 11 of 2,246
-days, and 3 days fell below it, all by less than the 2-visit `min_excess`. On busier data,
-  drops (an outage, a broken tracker) are just as detectable as spikes.
-- **Collective anomalies are missed.** A tracker that silently breaks and reports 0 for
-  a week produces days that each look like a plausible quiet day. Catch these with an
-  extra rule, such as "N zeros in a row", or by forecasting weekly totals.
-- **A lasting change looks like a run of anomalies.** If traffic doubles permanently
-  (a new audience), the first days are flagged; then the model, which re-reads the
-  history every day, adapts. A run of consecutive anomalies usually means "something
-  changed", not "many separate incidents".
-- **Calibration matters.** The false-alarm rate is only ~2% if the model's quantiles are
-  accurate. Check it on your own data, as in the section above.
+- **Adaptation hides slow changes.** A rolling forecaster re-reads the latest history,
+  so a gradual shift becomes the new normal within one horizon. The day-ahead detector
+  missed the lockdowns for exactly this reason; see
+  [the horizon](#the-horizon-decides-what-you-can-see).
+- **Clock changes.** The model sees UTC hours. On the two daylight-saving switches each
+  year, the daily pattern moves by an hour in UTC, and some hours fall outside the
+  band. Forecasting in local time, or masking those days, avoids it.
+- **The calendar only knows what you tell it.** National holidays help, but Christmas
+  week, bridge days and regional holidays still look like drops. Great Britain's
+  national calendar in the `holidays` package even lacks Easter Monday and the
+  late-August bank holiday, which are England and Wales only; using England's
+  calendar (`subdiv="ENG"`) would cover most of Britain's demand.
+- **What a weather-aware model would expect.** Some days are surprises to Timestral
+  only because it doesn't see the weather.
+- **Rare covariate values can make the band explode.** With the holiday covariate,
+  the 99% line for Christmas Day in Great Britain reached 37.8 million MW, which would
+  hide anything that week. This project caps forecasts with `quantile_real_cap_k=1`;
+  see [03-python-library.md](03-python-library.md#capping-extreme-quantiles-quantile_real_cap_k).
+- **Calibration matters.** The false-alarm rate is only ~2% if the model's quantiles
+  are accurate. Check it on your own data, as `main.py anomalies` does.
 
 ## Glossary
 
 | Term | Meaning |
 |---|---|
 | **Anomaly** / outlier | A value that doesn't fit the usual pattern |
+| **Anomalous day** | Here: a day with at least `min_hours` hours outside the band |
 | **Band** / interval | The range between two quantiles; here 1% to 99% |
-| **Calibrated** | The model's probabilities hold in practice: ~1% of days really are above its 99% line |
-| **Collective anomaly** | A run of values that is odd together |
+| **Calibrated** | The model's probabilities hold in practice: ~1% of hours really are above its 99% line |
+| **Collective anomaly** / level shift | A run of values that is odd together |
 | **Contextual anomaly** | A value that is normal in general but not at that time |
-| **Excess** | How far outside the band a value is, in visits |
+| **Deviation %** | How far a day's actual energy was from the forecast's, in % |
+| **Episode** | Consecutive anomalous days of the same country and kind |
 | **False alarm** / false positive | A normal value flagged as an anomaly |
+| **Horizon** | How far ahead each forecast looks: 24 hours (day-ahead) or 168 (week-ahead) |
 | **Look-ahead** / leakage | Using information from the period being judged |
-| **Masking** | An earlier anomaly widening the band so a later one goes unflagged |
 | **Missed anomaly** / false negative | A real anomaly that wasn't flagged |
-| **One-step-ahead** / walk-forward | Forecasting each step only from the steps before it |
 | **Point anomaly** | A single value far from normal |
 | **Quantile** | A value with a stated chance of not being exceeded |
+| **Rolling forecast** / walk-forward | Forecasting each block only from the data before it, block after block |
 | **Z-score** | Distance from the average, measured in standard deviations |

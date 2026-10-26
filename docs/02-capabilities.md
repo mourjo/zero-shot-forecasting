@@ -31,15 +31,15 @@ are Mistral's own; I haven't reproduced them.
 |---|---|---|
 | Zero-shot forecasting | Forecast any series without training | Yes, everything is zero-shot |
 | Probabilistic output | 21 quantiles per forecast step | Yes: intervals, median, mean |
-| Long context | Up to 32,768 past steps | Yes, all ~590 days |
-| Any horizon | Long horizons are forecast block by block | Yes, 30 days |
-| Batches of series | Many independent series in one call | Yes: site total + 4 pages, and ~2,700 rows for anomalies |
-| Multivariate | Related measurements forecast jointly | No, pages are forecast independently |
+| Long context | Up to 32,768 past steps | Yes: the month-ahead forecast reads the last 32,768 hours (~3.7 years) |
+| Any horizon | Long horizons are forecast block by block | Yes: 720 hours (30 days) in one pass, and 24-hour day-ahead blocks |
+| Batches of series | Many independent series in one call | Yes: 5 countries at once; the anomaly replay sends 260 week-ahead forecasts (or 1,830 day-ahead ones) as rows of one batch |
+| Multivariate | Related measurements forecast jointly | Tried, not used by default; see [section 5](#5-multivariate-forecasting) |
 | Past-only covariates | Extra inputs known only up to now | No |
-| Known-future covariates | Extra inputs known ahead (calendar, plans) | Yes, day of week |
-| Categorical covariates | Labels like weekday or machine state | Yes, day of week |
-| Missing values | NaN gaps are handled | Yes, pages before they existed |
-| Non-negative output | Counts never forecast below 0 | Yes (automatic) |
+| Known-future covariates | Extra inputs known ahead (calendar, plans) | Yes, public holidays per country |
+| Categorical covariates | Labels like weekday or machine state | No: holidays are a 0/1 indicator |
+| Missing values | NaN gaps are handled | Yes, a few missing hours in France and Spain |
+| Non-negative output | Counts never forecast below 0 | Automatic, but irrelevant: load never gets near 0 |
 | CPU inference | No GPU needed | Yes |
 | Anomaly detection | Not built in; easy to build from the intervals | Yes, built in `forecasting.py` |
 
@@ -80,7 +80,8 @@ least the 80% value.
 
 **What it means for you.**
 
-- **Intervals**: "between 1 and 11 visits, with 80% probability" (10%-90% quantiles).
+- **Intervals**: "between 38 and 44 GW at 18:00 tomorrow, with 80% probability"
+  (10%-90% quantiles).
 - **Risk-based planning**: provision for the 99% quantile, not the average.
 - **Alert thresholds**: flag a value above the 99% quantile, which is how this
   project detects anomalies.
@@ -121,14 +122,17 @@ fits in a single pass.
 **What it is.** `forecast()` takes a batch of series, shaped `(series, time)`, and
 forecasts each one independently in one call.
 
-**What it means for you.** Forecasting 1,000 products, servers or pages costs one
-call per batch, not one model per series. This project sends the site total and four
-pages as one batch. The anomaly replay sends about 2,700 history snapshots, in
-batches of 256.
+**What it means for you.** Forecasting 1,000 products, servers or countries costs one
+call per batch, not one model per series. This project sends the five countries as
+one batch. The anomaly replay goes further: each of its forecasts (one per week and
+country, 260 in a year; or one per day and country, 1,830, with `--horizon 24`)
+becomes a row with its own window of history, sent in batches of 64. See `rolling()`
+in `forecasting.py`.
 
-**Different lengths.** All rows in a batch share one length. Pad shorter histories on
-the left with `NaN`, which Timestral treats as missing. That is how
-`one_step_ahead()` in `forecasting.py` batches histories of different lengths.
+**Different lengths.** All rows in a batch share one length. To batch histories of
+different lengths, pad the shorter ones on the left with `NaN`, which Timestral treats
+as missing. This project doesn't need to: every row in `rolling()` uses the same
+window of 2,048 hours.
 
 ## 5. Multivariate forecasting
 
@@ -141,9 +145,19 @@ information across variates, so a change in one can inform the forecast of anoth
 relationships in mind, instead of each in isolation. Mistral's example is a plant,
 where pressure, temperature and vibration move together.
 
-**In this project.** Not used. The pages could have been passed as variates of one
-series, but with 0-5 visits a day per page there is little shared signal to exploit.
-Each page is a separate univariate series instead.
+**In this project.** Each country is its own univariate series by default.
+I tried two multivariate set-ups on day-ahead forecasts for September 2020
+(2,048 hours of history, 209M model, no covariates):
+
+| Set-up | Average error, separately | Jointly |
+|---|---|---|
+| The 5 countries as variates of one series | 1.80% | 1.78% |
+| Germany's load with German solar and wind generation | 1.34% | 1.30% |
+
+Both help slightly, and Germany gains the most from forecasting with solar and wind,
+which both depend on the same weather. The gains are small, so the project keeps the
+simpler univariate set-up. With weather-driven series, or with metrics that really
+drive each other (a pump's pressure and vibration), the joint forecast matters more.
 
 ## 6. Covariates
 
@@ -184,10 +198,23 @@ Both kinds can be:
 tell the model about things you *know* will happen. With a production schedule as a
 covariate, a planned load increase is expected instead of looking like a surprise.
 
-**In this project.** Day of week is a known-future categorical covariate. On this data
-it made no measurable difference over four backtested months: a few visits a day have
-little weekly rhythm. A covariate for "post published today" would probably matter
-more, but it can't be derived from the visits export.
+**In this project.** Each country's public holidays are a known-future 0/1 indicator
+(`holiday_indicator()` in `data.py`). Measured on day-ahead forecasts (2,048 hours of
+history, 209M model), it makes no difference in an ordinary month and a large one
+around holidays:
+
+| Period | Average error without holidays | With holidays |
+|---|---|---|
+| September 2019 | 1.77% | 1.77% |
+| 15 Dec 2019 - 15 Jan 2020 | 4.25% | 3.30% |
+
+Italy gains the most over Christmas (6.41% → 3.82%). The flip side is cost: any
+covariate makes Timestral about 4x slower. `--no-holidays` turns it off.
+
+**What it doesn't have: weather.** Electricity demand depends heavily on temperature.
+The grid operators feed weather forecasts into their models; this project gives
+Timestral only past load and holidays. OPSD has no weather data, but a temperature
+forecast would be the natural next known-future covariate.
 
 **Requirements.** Not every checkpoint supports known-future covariates.
 `forecaster.supports_known_covariates` tells you; both checkpoints used here (28M,
@@ -198,7 +225,8 @@ more, but it can't be derived from the visits export.
 - **Missing values**: put `NaN` where data is missing (or pass an `observation_mask`).
   Gaps in the middle, a late start, padding: all handled.
 - **Any scale**: each series is normalised internally, so 5 visits a day and 5 million
-  requests a second are treated alike. Different scales can share one batch.
+  requests a second are treated alike. Different scales can share one batch: here
+  Germany (~55 GW on average) sits next to Spain (~28 GW).
 - **Counts and other non-negative data**: if every observed value is 0 or more, the
   forecast is clipped at 0. Forecasts of visits or sales are never negative.
 - **Robustness to wild values**: forecasts are capped to a (very generous) range around
@@ -214,8 +242,9 @@ more, but it can't be derived from the visits export.
 | Timestral-209M | `mistralai/Timestral-209M` | 837 MB | most accurate; ~140 ms in the same test |
 
 All four share one architecture and training recipe, so switching is just a different
-id. Measured in this project on a laptop CPU, a batch of 256 series of ~600 days took
-about **5 s with 28M** and **25 s with 209M**.
+id. Measured in this project on a laptop CPU, 150 day-ahead forecasts (5 countries x 30
+days, 2,048 hours of history each, with the holiday covariate) took **8.3 s with 28M**
+and **49 s with 209M**, for an average error of 1.86% and 1.81%.
 
 **What it means for you.** No GPU is required. Start with 209M for accuracy and drop
 to a smaller size when latency or volume matters (for example the anomaly replay:
@@ -284,12 +313,14 @@ flowchart LR
 - **No explanation.** It doesn't say *why* it forecasts what it does, or which past
   values mattered most.
 - **No knowledge of the outside world.** It only knows the numbers you give it. A
-  launch, holiday or outage it isn't told about (through a covariate) is invisible
-  to it.
+  launch, holiday, heatwave or lockdown it isn't told about (through a covariate) is
+  invisible to it. In this project, no forecast saw the March 2020 lockdowns coming;
+  the day-ahead forecasts caught up within days because they keep re-reading the
+  latest history.
 - **No custom quantile levels**, only the 21 fixed ones.
 - **No training in the open package** (see [fine-tuning](#10-fine-tuning-outside-the-open-package)).
-- **No miracles on noise.** On sparse data like this website's, much of the movement
-  is random. The honest output there is a wide interval, which is what you get.
+- **No miracles on noise.** On sparse, noisy data, much of the movement is random. The
+  honest output there is a wide interval, which is what you get.
 
 ## How accurate is it?
 
@@ -306,7 +337,10 @@ Mistral reports, for **Timestral-209M**:
 These are Mistral's launch figures; they say a technical report with full results
 will follow.
 
-On this project's data (one backtest, cutoff 2026-09-25), Timestral-209M forecast 179
-visits for a month that had 164. It beat a "repeat last week" baseline on the busier
-series and tied on the sparse pages. See the [README](../README.md) for the full
-numbers.
+On this project's data (September 2020, five countries), Timestral-209M's day-ahead
+forecasts were off by 1.5% (Germany) to 4.8% (Great Britain) on average. That beats
+the grid operators' own published forecasts in Germany and Great Britain, and loses
+to them in France, Italy and Spain, where the operators' weather-driven models are
+very accurate (0.9% in Spain). It beat a "same hour last week" baseline everywhere.
+See the [README](../README.md)
+for the full numbers.

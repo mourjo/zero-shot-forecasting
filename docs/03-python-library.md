@@ -89,7 +89,7 @@ TimestralForecaster.from_pretrained(
 | `device` | `"cpu"` | Where the model runs: `"cpu"`, `"cuda"`, `"cuda:1"`, or any other PyTorch device | You have a GPU and large batches |
 | `max_context` | `None` (= 32,768) | The most past steps the model reads; older steps are dropped | To cap the cost of very long histories, or to test whether old data helps |
 | `per_shot_horizon_patches` | `32` | Patches (of 32 steps) predicted per pass, capped at 32. Longer horizons take several passes | Rarely. Lower values mean more passes, each feeding its median back |
-| `quantile_real_cap_k` | `1e4` | Clamps forecasts to `[min - k*s, max + k*s]` of the history, where `s` is the scale of the latest values. `0` turns it off | Rarely; it only stops absurd values on degenerate inputs |
+| `quantile_real_cap_k` | `1e4` | Clamps forecasts to `[min - k*s, max + k*s]` of the history, where `s` is the scale of the latest values. `0` turns it off | When extreme quantiles blow up. This project uses `1`; see [below](#capping-extreme-quantiles-quantile_real_cap_k) |
 | `revision` | `None` | A Hub branch, tag or commit to pin | Pin a version for reproducibility |
 | `cache_dir` | `None` | Where downloads are stored (default: the Hugging Face cache, `~/.cache/huggingface/hub`) | Shared or read-only machines |
 | `token` | `None` | Hugging Face token | Only for gated or private repos |
@@ -110,12 +110,16 @@ flowchart TD
     L --> LM
 ```
 
-| Model | Download | Batch of 260 series x 590 days, 30-day horizon (laptop CPU) |
-|---|---|---|
-| `mistralai/Timestral-5M` | 21 MB | not measured |
-| `mistralai/Timestral-28M` | 111 MB | 1.2 s |
-| `mistralai/Timestral-123M` | 490 MB | not measured |
-| `mistralai/Timestral-209M` | 837 MB | 6.4 s |
+| Model | Download | 150 day-ahead forecasts, with holidays | without holidays |
+|---|---|---|---|
+| `mistralai/Timestral-5M` | 21 MB | not measured | not measured |
+| `mistralai/Timestral-28M` | 111 MB | 8.3 s | 2.2 s |
+| `mistralai/Timestral-123M` | 490 MB | not measured | not measured |
+| `mistralai/Timestral-209M` | 837 MB | 49.0 s | 12.0 s |
+
+Measured on a laptop CPU: 5 countries x 30 days of September 2020, each forecast from
+2,048 hours of history, 24-hour horizon, best of two runs. The average error was
+1.86% with 28M and 1.81% with 209M.
 
 **Precision.** Models load in float32, the precision Mistral validated. The lower-level
 `timestral.load_model(path, device, dtype)` accepts another `dtype`, but anything other
@@ -158,8 +162,8 @@ of covariates.
 
 | Shape | Meaning | Example |
 |---|---|---|
-| `(T,)` | one series | `visits_per_day` |
-| `(B, T)` | `B` independent series | 5 pages, one row each, as in this project |
+| `(T,)` | one series | Germany's hourly load |
+| `(B, T)` | `B` independent series | 5 countries, one row each, as in this project |
 | `(B, V, T)` | `B` series, each with `V` variates forecast jointly | 10 pumps x (vibration, temperature, pressure) |
 
 
@@ -174,8 +178,8 @@ flowchart LR
 Rules worth knowing:
 
 - **All rows share one length `T`.** For histories of different lengths, pad the start
-  with `NaN`. `one_step_ahead()` in `forecasting.py` does this to batch ~2,700
-  histories of different lengths.
+  with `NaN`. (`rolling()` in `forecasting.py` avoids the issue by giving every row the
+  same 2,048-hour window.)
 - **The time steps must be regular**: one per day, per hour, etc. Timestral has no
   notion of dates; fill missing slots with `NaN` (unknown) or 0 (truly zero),
   whichever is true.
@@ -188,20 +192,20 @@ Rules worth knowing:
 ## Covariates in practice
 
 ```python
-# Day of week, known for the future too, as a categorical covariate.
-steps = np.arange(T + H)
-weekday = (first_weekday + steps) % 7                      # codes 0..6
+# Public holidays, known for the future too, as a 0/1 indicator (what this project does;
+# see holiday_indicator() in data.py). One row per country, covering history + horizon.
+holiday = holiday_flags[None, None, :]                      # (1, 1, T + H), values 0 or 1
+result = forecaster.forecast(context, H, known_covariates=holiday)
+
+# Day of week as a categorical covariate.
+weekday = (first_weekday + np.arange(T + H)) % 7            # codes 0..6
 result = forecaster.forecast(
     context, H,
     categorical_known_covariates=weekday[None, None, :].astype(float),  # (1, 1, T + H)
 )
 
-# A planned launch on day T + 3, as a 0/1 indicator.
-launch = np.zeros((1, 1, T + H)); launch[0, 0, T + 3] = 1
-result = forecaster.forecast(context, H, known_covariates=launch)
-
 # Several covariates: stack them along the C axis.
-known = np.concatenate([launch, temperature_forecast], axis=1)     # (B, 2, T + H)
+known = np.concatenate([holiday, temperature_forecast], axis=1)     # (B, 2, T + H)
 ```
 
 What to know:
@@ -220,10 +224,11 @@ What to know:
 - **Check support**: `forecaster.supports_covariates` and
   `forecaster.supports_known_covariates` say whether a checkpoint accepts covariates.
   Both are `True` for the 28M and 209M checkpoints.
-- **Cost**: any covariate makes a forecast about **4x slower** (6.3 s → 26.5 s for the
-  209M batch above, numeric or categorical alike), because the model then runs its
+- **Cost**: any covariate makes a forecast about **4x slower** (12.0 s → 49.0 s for the
+  209M batch above; numeric and categorical alike), because the model then runs its
   full target-plus-covariate attention. Only add covariates that help; backtest with
-  and without.
+  and without. The holiday covariate here is worth it: it makes no difference in
+  September, but cuts the day-ahead error over Christmas from 4.25% to 3.30%.
 
 ## The result: `Forecast`
 
@@ -271,8 +276,9 @@ cancels any tendency of the model to lean upwards or downwards, and usually make
 forecasts a little more stable.
 
 - **Cost**: two model passes instead of one, so turning it off **halves the time**.
-- **Effect here**: negligible. On this project's backtest, MAE moved from 1.367 to
-  1.373 with 209M, and 80% coverage from 93% to 91%. Timing went from 6.4 s to 3.0 s.
+- **Effect here**: negligible. On the 150 day-ahead forecasts above (209M, with
+  holidays), the average error went from 1.81% to 1.79% with it *off*, and 80%
+  coverage from 86% to 84%. Time went from 49.0 s to 26.4 s.
 
 Turn it off when speed matters more than the last bit of accuracy, such as large
 batches or the anomaly replay. Backtest first.
@@ -282,10 +288,37 @@ batches or the anomaly replay. Backtest first.
 If every observed value in a series' history is 0 or more, its forecast is clamped
 at 0. Series with any negative history value are left alone.
 
-- **Effect here**: with it off, the 1% quantile went down to -0.25 visits (209M) or
-  -0.6 (28M), which is impossible for visit counts.
+- **Effect here**: none. Electricity load never gets anywhere near 0, so there is
+  nothing to clip. It matters for counts close to 0: an earlier version of this project
+  forecast daily website visits (0-5 a day), and turning it off let the 1% quantile
+  drop to -0.25 visits, which is impossible.
 - Turn it off only for data that *can* go negative but happened not to in the
   history: temperatures in summer, profit and loss, deviations from a baseline.
+
+### Capping extreme quantiles: `quantile_real_cap_k`
+
+Not a `forecast()` switch but a `from_pretrained()` one, and the one setting this
+project changes. Forecasts are clamped to `[min - k*s, max + k*s]` of the history,
+where `s` is the scale of the latest values. With the default `k = 10,000` the clamp
+almost never applies.
+
+Why it matters here: with the holiday covariate, the week-ahead forecast for
+Christmas Day in Great Britain had a **99% quantile of 37.8 million MW**, for a country
+that peaks around 45,000 MW. The median stayed sensible (47,030 MW), but the mean,
+which is computed from all quantiles, jumped to 1.2 million MW, and the anomaly band
+became useless for that week. The same week without the covariate looked normal.
+Rare indicator values seem to make the outer quantiles unstable.
+
+| `quantile_real_cap_k` | Great Britain's highest 99% quantile, Christmas week | Medians |
+|---|---|---|
+| `1e4` (default) | 37,784,240 MW | unchanged |
+| `10` | 125,787 MW | unchanged |
+| `3` | 73,023 MW | unchanged |
+| `1` (this project) | 57,948 MW | unchanged |
+
+Spain and Italy were unaffected at every value. A tight cap is safe when the series
+stays within its historical range, as electricity demand does. Be careful with
+strongly trending series, where future values legitimately leave the historical range.
 
 ## Advanced constructor options
 
@@ -332,20 +365,26 @@ offers that through Mistral Forge.
 
 ## Performance tips
 
-From the most to the least impact, as measured on this project:
+From the most to the least impact, measured on the 150 day-ahead forecasts above:
 
-1. **Skip covariates that don't help**: about 4x faster.
-2. **Pick a smaller model**: 28M is about 5x faster than 209M.
-3. **Turn off `symmetric_averaging`**: about 2x faster.
-4. **Batch.** One call with many rows beats many calls with one row. Watch memory;
-   chunks of a few hundred rows work well on a laptop (`one_step_ahead()` uses 256).
-5. **Cap the context** with `max_context` if your histories are very long and old
-   data doesn't help.
-6. **Use a GPU** (`device="cuda"`) for large volumes.
+| Change | Speed-up | Accuracy cost here |
+|---|---|---|
+| Use 28M instead of 209M | ~6x (49.0 s → 8.3 s) | 1.81% → 1.86% |
+| Skip covariates that don't help | ~4x (49.0 s → 12.0 s) | none in September; holidays matter around holidays |
+| Turn off `symmetric_averaging` | ~2x (49.0 s → 26.4 s) | none measurable |
+| All three | ~49x (49.0 s → 1.0 s) | 1.81% → 1.83% in September |
 
-Combining 1-3 on this project's anomaly replay should take it from ~5 minutes to
-well under a minute (not measured end to end). Backtest first to check that accuracy
-holds.
+Also:
+
+- **Batch.** One call with many rows beats many calls with one row. Watch memory;
+  chunks of a few dozen to a few hundred rows work well on a laptop (`rolling()` uses
+  64 rows of 2,048 hours).
+- **Cap the context** with `max_context`, or pass less history: time grows with
+  history length. With 8,192 hours instead of 2,048, day-ahead forecasts were ~5x
+  slower and only slightly more accurate (1.71% vs 1.77% in September 2019).
+- **Use a GPU** (`device="cuda"`) for large volumes.
+
+Backtest after each change to check that accuracy holds where it matters to you.
 
 ## Errors you may hit
 
@@ -362,7 +401,7 @@ holds.
 
 | Where | What it calls |
 |---|---|
-| `forecasting.load_forecaster` | `from_pretrained(model_id)` with all defaults; `--model` picks the size |
-| `forecasting._forecast` | `forecast(context, prediction_length, categorical_known_covariates=weekday)`; symmetric averaging and clipping left on |
-| `forecasting.forecast` | A `(5, T)` batch: site total + 4 pages, 30-day horizon; keeps the 10%, 50% and 90% quantiles, plus the mean from all 21 |
-| `forecasting.one_step_ahead` | ~2,700 rows, NaN-padded to one length, horizon 1, in chunks of 256; keeps the 1%, 50% and 99% quantiles |
+| `forecasting.load_forecaster` | `from_pretrained(model_id, quantile_real_cap_k=1.0)`; `--model` picks the size |
+| `forecasting._forecast` | `forecast(context, prediction_length, known_covariates=holidays)`; symmetric averaging and clipping left on |
+| `forecasting.forecast` | A `(5, T)` batch, one row per country, with up to 32,768 hours of history and a 720-hour horizon; keeps the 10%, 50% and 90% quantiles, plus the mean from all 21 |
+| `forecasting.rolling` | One row per (block, country), each with the same 2,048-hour window, in chunks of 64. Day-ahead: 24-hour blocks, made 16 hours early in the backtest (`gap=16`); week-ahead: 168-hour blocks. Keeps the 1%, 50% and 99% quantiles (10% / 90% in the backtest) |
