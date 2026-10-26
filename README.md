@@ -71,10 +71,34 @@ gives a spike of 30-50.
 | `plots.py` | Matplotlib charts, one small panel per series |
 | `main.py` | The three commands: `forecast`, `backtest`, `anomalies` |
 
+```mermaid
+flowchart LR
+    CSV["daily_pages.csv"] --> D["data.py<br/>load_daily_visits"]
+    D --> H["Daily frame<br/>one column per series"]
+    H --> M["main.py"]
+    M -- "forecast, backtest" --> FC["forecasting.py<br/>forecast"]
+    M -- "anomalies" --> OS["forecasting.py<br/>one_step_ahead"]
+    FC --> T["Timestral"]
+    OS --> T
+    T --> Q["Quantile forecasts"]
+    Q --> M
+    M --> P["plots.py"]
+    M --> O["output/<br/>CSV + PNG per command"]
+    P --> O
+```
+
 ### Step 1: from rows to time series (`data.py`)
 
 Timestral needs evenly spaced series, but the export only has rows for days that had
 visits. `load_daily_visits` pivots it into a frame with:
+
+```mermaid
+flowchart LR
+    A["Rows<br/>day, path, visitors"] --> B["Pivot:<br/>one column per path"]
+    B --> C["Add every calendar day<br/>missing day = 0 visits"]
+    C --> D["Keep the total + top 4 pages"]
+    D --> E["Before a page's first visit:<br/>NaN, not 0"]
+```
 
 - a row for **every** calendar day, where a missing row means 0 visits;
 - a column `(all pages)` for the site-wide total, plus the `--pages` (default 4) most
@@ -150,6 +174,16 @@ To test a forecast honestly, give the model only the history up to a cutoff, for
 the days after it, and compare with what really happened. By default the cutoff is
 30 days before the end of the data; pick another one with `--cutoff 2026-06-25`.
 
+```mermaid
+gantt
+    title Default backtest
+    dateFormat YYYY-MM-DD
+    axisFormat %b %Y
+    section Data
+    the model sees this                :done, 2025-03-18, 2026-09-26
+    hidden then forecast and compared  :crit, 2026-09-26, 30d
+```
+
 ```
 Model saw data up to 2026-09-25; forecast 2026-09-26 .. 2026-10-25
 
@@ -190,10 +224,23 @@ That day is an anomaly if the real count falls outside the 1%-99% interval. The
 model never sees the day it judges, so a spike can't hide itself by raising its own
 forecast.
 
-Doing this one day at a time would take ~540 calls per series. Instead, each
+```mermaid
+gantt
+    title Each day is judged by a forecast made only from earlier days
+    dateFormat YYYY-MM-DD
+    axisFormat %b %d
+    section Judge Aug 30
+    history the model sees (from 2025-03-18) :done, 2026-08-20, 2026-08-30
+    forecast vs actual                      :crit, 2026-08-30, 1d
+    section Judge Aug 31
+    history the model sees (from 2025-03-18) :done, 2026-08-20, 2026-08-31
+    forecast vs actual                      :crit, 2026-08-31, 1d
+```
+
+Doing this one day at a time would take ~530 calls per series. Instead, each
 `(day, series)` pair becomes one row of a single batch. The rows have different
 history lengths, so the shorter ones are left-padded with `NaN`, which Timestral
-treats as missing. That makes about 2,700 rows of up to 586 days each, sent in
+treats as missing. That makes about 2,650 rows of up to 586 days each, sent in
 batches of 256.
 
 Two filters keep the list useful on low-traffic data:
