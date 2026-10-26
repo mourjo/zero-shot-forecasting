@@ -420,6 +420,9 @@ On very small counts, a value just outside the interval isn't interesting. One v
 to a page that usually gets none is technically "unexpected". This project requires a
 minimum distance from the interval (`--min-excess`) to filter those out.
 
+For the full picture (kinds of anomalies, tuning, pitfalls, running it live), see
+[04-anomaly-detection.md](04-anomaly-detection.md).
+
 An anomaly only says *that* something unusual happened, not *why*. On 2026-08-31 the
 site got 50 visits, spread over 44 pages at about one each. Working out that this
 looks like a crawler took a human looking at the data.
