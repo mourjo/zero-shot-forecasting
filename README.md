@@ -31,8 +31,7 @@ More documentation in [`docs/`](docs):
 - [03-python-library.md](docs/03-python-library.md): the `timestral` Python API, every
   setting you can change, and their measured effect on speed and accuracy.
 - [04-anomaly-detection.md](docs/04-anomaly-detection.md): how forecast-based anomaly
-  detection works, how this project implements it, how to tune it, and how to run it
-  live.
+  detection works, how this project implements it, and how to tune it.
 
 ## Quick start
 

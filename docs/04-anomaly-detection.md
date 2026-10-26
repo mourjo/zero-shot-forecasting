@@ -15,7 +15,6 @@ how to tune it or reuse it on other data, such as server metrics. Like
 - [Choosing the band: false alarms vs missed anomalies](#choosing-the-band-false-alarms-vs-missed-anomalies)
 - [Results on this data](#results-on-this-data)
 - [Pitfalls](#pitfalls)
-- [Running it live](#running-it-live)
 - [Glossary](#glossary)
 
 ## What an anomaly is
@@ -315,41 +314,6 @@ days, and 3 days fell below it, all by less than the 2-visit `min_excess`. On bu
   changed", not "many separate incidents".
 - **Calibration matters.** The false-alarm rate is only ~2% if the model's quantiles are
   accurate. Check it on your own data, as in the section above.
-
-## Running it live
-
-The replay in this project judges the past. The same logic works live: every time a
-new value arrives, compare it with the band forecast just before it.
-
-```mermaid
-sequenceDiagram
-    participant S as Metrics store<br/>(e.g. Mimir)
-    participant J as Detector job
-    participant T as Timestral
-    participant A as Alerting
-    loop every step (e.g. every 5 minutes)
-        J->>S: query the history up to now
-        S-->>J: values
-        J->>T: forecast the next step
-        T-->>J: 1% / 50% / 99% quantiles
-        Note over J: wait for the next value
-        J->>S: query the new value
-        S-->>J: actual
-        alt actual outside the band by at least min_excess
-            J->>A: raise an anomaly with actual, band and excess
-        end
-    end
-```
-
-Practical notes for live use:
-
-- **Batch all series** into one forecast call per step, as `one_step_ahead` does.
-- **Speed**: at 5-minute steps there is plenty of time. For thousands of series, use a
-  smaller model (28M) and skip covariates; see the
-  [performance tips](03-python-library.md#performance-tips).
-- **Group consecutive anomalies** into one incident, to avoid an alert per step.
-- **Store the bands**, not just the alerts. Showing the band next to the metric on a
-  dashboard makes each alert self-explanatory.
 
 ## Glossary
 
