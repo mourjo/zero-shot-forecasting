@@ -145,21 +145,34 @@ model forecasts this month without the data for it. Then we compare the forecast
 the actual demand.
 
 For each day of September 2020, the model makes a forecast at 08:00 on the day before.
-It uses the 12 weeks of data until that time. The grid operators make their forecasts
-at the same time, with the same history.
+It uses only the 12 weeks of data until that time. The grid operators must publish
+their forecasts at the same time. This is the forecast for Thursday 10 September:
 
-```mermaid
-gantt
-    title Forecast for Thursday 10 September 2020
-    dateFormat YYYY-MM-DD HH:mm
-    axisFormat %a %d
-    section Model
-    history (12 weeks, end shown)  :done, 2020-09-07 00:00, 2020-09-09 08:00
-    forecast, not compared          :active, 2020-09-09 08:00, 2020-09-10 00:00
-    forecast, compared with actual  :crit, 2020-09-10 00:00, 2020-09-11 00:00
+```
+                     Wednesday 9 September                 Thursday 10 September
+          00:00             08:00               24:00                            24:00
+   ─────────┼─────────────────┼───────────────────┼────────────────────────────────┼──
+   ██████████████████████████ │░░░░░░░░░░░░░░░░░░░│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│
+   history: the model sees    │ forecast, but not │ forecast, compared with the
+   the 12 weeks until 08:00   │ compared          │ actual demand
+                              ▲
+                              the model makes the forecast here
 ```
 
-We do this for each of the 30 days. The results:
+Then the model does the same for each of the other days:
+
+| Forecast made at | Data that the model sees | Day that we compare with the actual demand |
+|---|---|---|
+| Mon 31 Aug, 08:00 | 12 weeks until Mon 31 Aug, 08:00 | Tue 1 Sep |
+| Tue 1 Sep, 08:00 | 12 weeks until Tue 1 Sep, 08:00 | Wed 2 Sep |
+| Wed 2 Sep, 08:00 | 12 weeks until Wed 2 Sep, 08:00 | Thu 3 Sep |
+| ... | ... | ... |
+| Tue 29 Sep, 08:00 | 12 weeks until Tue 29 Sep, 08:00 | Wed 30 Sep |
+
+The model never sees the day that we compare. Each forecast uses the most recent demand,
+until 08:00 on the day before. Thus the model can follow changes quickly.
+
+The results for the 30 days:
 
 - In Germany, France, Italy and Spain, the average error was 1.5-2.2%. In Great
   Britain, it was 4.8%.
