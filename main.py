@@ -1,7 +1,7 @@
 """Forecast, backtest and find anomalies in European electricity demand with Timestral.
 
     uv run main.py forecast   # the next 30 days, hour by hour
-    uv run main.py backtest   # hide a past month, forecast it, compare with the grid operators
+    uv run main.py backtest   # replay a past month day by day, compare with the grid operators
     uv run main.py anomalies  # days that fell outside the week-ahead forecast, e.g. COVID lockdowns
 """
 
@@ -65,42 +65,34 @@ def run_backtest(power, args: argparse.Namespace):
         raise SystemExit(f"Not enough data after {cutoff:%Y-%m-%d}; pick an earlier --cutoff")
     seen = load.loc[:start - pd.Timedelta(hours=1)]
     hidden = load.loc[start:end - pd.Timedelta(hours=1)]
-    horizon = len(hidden)
     known = holidays_for(load.index, args)
-    forecaster = load_forecaster(args.model)
 
-    # 1. Month ahead: one forecast for the whole hidden period, made at the cutoff.
-    month = forecast(forecaster, seen, horizon, known)
-    # 2. Day ahead: at 08:00 UTC every day, forecast the next day's 24 hours, like the grid operators do.
-    day = rolling(forecaster, load, start, end, horizon=24, context=args.context, gap=OPERATOR_GAP, known=known,
-                  low=0.1, high=0.9)
+    # Every day at 08:00 UTC, forecast the next day's 24 hours, like the grid operators do.
+    day = rolling(load_forecaster(args.model), load, start, end, horizon=24, context=args.context, gap=OPERATOR_GAP,
+                  known=known, low=0.1, high=0.9)
+    operator = power.tso_forecast.loc[hidden.index]
     # Baseline to beat: "same hour one week earlier".
     last_week = load.shift(7 * 24).loc[hidden.index]
 
-    inside = (hidden >= month.low) & (hidden <= month.high)
+    inside = (hidden >= day.low) & (hidden <= day.high)
     report = pd.DataFrame({
-        "month-ahead timestral": mape(month.median, load),
-        "month-ahead last-week": mape(pd.DataFrame(np.resize(seen.iloc[-7 * 24:].to_numpy(), hidden.shape),
-                                                   index=hidden.index, columns=hidden.columns), load),
-        "day-ahead timestral": mape(day.median, load),
-        "day-ahead grid operator": mape(power.tso_forecast.loc[hidden.index], load),
-        "day-ahead last-week": mape(last_week, load),
-        f"month-ahead in {month.high_level - month.low_level:.0%} interval": inside.mean().map("{:.0%}".format),
+        "timestral": mape(day.median, load),
+        "grid operator": mape(operator, load),
+        "last week": mape(last_week, load),
+        f"timestral in {day.high_level - day.low_level:.0%} interval": inside.mean().map("{:.0%}".format),
     })
 
-    days = pd.concat({"actual": hidden, "month-ahead": month.median, "day-ahead": day.median,
-                      "grid operator": power.tso_forecast.loc[hidden.index]}, axis=1).round(0)
+    days = pd.concat({"actual": hidden, "timestral": day.median, "grid operator": operator}, axis=1).round(0)
     name = f"backtest-{cutoff:%Y-%m-%d}"
     days.to_csv(OUTPUT / f"{name}.csv")
-    plot_backtest(seen, hidden, month, day, OUTPUT / f"{name}.png")
+    plot_backtest(seen, hidden, day, operator, OUTPUT / f"{name}.png")
 
-    print(f"Model saw data up to {cutoff:%Y-%m-%d}; forecast {start:%Y-%m-%d} .. {end - DAY:%Y-%m-%d} (UTC)\n")
+    print(f"Day-ahead forecasts for {start:%Y-%m-%d} .. {end - DAY:%Y-%m-%d} (UTC), each made at 08:00 UTC the day "
+          f"before from the {args.context} hours up to then\n")
     print("Mean absolute percentage error (MAPE), lower is better:\n")
     print(report.round(2).to_string())
-    print("\nmonth-ahead = one forecast for the whole period, made at the cutoff.")
-    print("day-ahead   = every day at 08:00 UTC, a forecast for the next day from the history before it.")
-    print("grid operator = the day-ahead forecast the national grid operator published (from the data).")
-    print("last-week   = baseline that repeats the same hour one week earlier.")
+    print("\ngrid operator = the day-ahead forecast the national grid operator published (from the data).")
+    print("last week     = baseline that repeats the same hour one week earlier.")
     print(f"Wrote {OUTPUT / name}.csv and {OUTPUT / name}.png")
 
 
@@ -175,9 +167,9 @@ def main():
     p.add_argument("--days", type=int, default=30, help="days to forecast")
     p.set_defaults(run=run_forecast)
 
-    p = commands.add_parser("backtest", help="forecast a past period and score it against the grid operators")
+    p = commands.add_parser("backtest", help="replay day-ahead forecasts for a past period and score them against the grid operators")
     p.add_argument("--days", type=int, default=30, help="days to hide and forecast")
-    p.add_argument("--cutoff", help="last day the model may see, YYYY-MM-DD (default: days before the end)")
+    p.add_argument("--cutoff", help="day before the first forecast day, YYYY-MM-DD (default: days before the end)")
     p.add_argument("--context", type=int, default=CONTEXT, help="hours of history for each day-ahead forecast")
     p.set_defaults(run=run_backtest)
 

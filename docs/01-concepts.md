@@ -498,9 +498,9 @@ flowchart TD
     B -- "much more than 80%" --> U["Underconfident:<br/>ranges too wide"]
 ```
 
-In this project, the 30-day forecast's 80% interval covered 90-98% of the hours:
-somewhat too wide, the safer side to be on. The day-ahead forecasts, which have less
-to be unsure about, covered 86% in a normal month.
+In this project, the day-ahead forecasts' 80% interval covered 79-89% of the hours in
+September 2020: close to the promise, and slightly on the wide side, the safer side to
+be on.
 
 Calibration matters because the ranges are what you base decisions on: "how much
 generation must stand by to be 99% safe?" is a question about a quantile, not about

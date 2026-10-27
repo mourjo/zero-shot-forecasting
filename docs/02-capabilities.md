@@ -31,7 +31,7 @@ are Mistral's own; I haven't reproduced them.
 |---|---|---|
 | Zero-shot forecasting | Forecast any series without training | Yes, everything is zero-shot |
 | Probabilistic output | 21 quantiles per forecast step | Yes: intervals, median, mean |
-| Long context | Up to 32,768 past steps | Yes: the month-ahead forecast reads the last 32,768 hours (~3.7 years) |
+| Long context | Up to 32,768 past steps | Yes: the 30-day forecast reads the last 32,768 hours (~3.7 years) |
 | Any horizon | Long horizons are forecast block by block | Yes: 720 hours (30 days) in one pass, and 24-hour day-ahead blocks |
 | Batches of series | Many independent series in one call | Yes: 5 countries at once; the anomaly replay sends 260 week-ahead forecasts (or 1,830 day-ahead ones) as rows of one batch |
 | Multivariate | Related measurements forecast jointly | Tried, not used by default; see [section 5](#5-multivariate-forecasting) |

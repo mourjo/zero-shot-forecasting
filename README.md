@@ -16,9 +16,9 @@ demand in five European countries, 2015-2020, including the COVID-19 lockdowns. 
 covers three common tasks:
 
 1. **Forecast** demand for the next 30 days, hour by hour.
-2. **Backtest**: hide a past month, forecast it from the data before it, and score
-   the forecast against what actually happened, and against the forecasts the grid
-   operators themselves published.
+2. **Backtest**: replay a past month day by day, forecasting each day from the
+   morning before, and score those forecasts against what actually happened, and
+   against the forecasts the grid operators themselves published.
 3. **Detect anomalies**: find past days that the model would not have expected, such
    as the start of the lockdowns.
 
@@ -41,10 +41,8 @@ More documentation in [`docs/`](docs):
 ```sh
 uv sync                                   # installs timestral from GitHub, plus pandas, matplotlib, holidays
 uv run main.py forecast                   # ~1 min
-uv run main.py backtest                   # ~2 min
-uv run main.py backtest --cutoff 2020-03-08   # the same, just before the lockdowns
-uv run main.py anomalies                  # ~2 min (week-ahead)
-uv run main.py anomalies --horizon 24     # ~11 min (day-ahead)
+uv run main.py backtest                   # ~1 min
+uv run main.py anomalies                  # ~2 min
 ```
 
 The first run downloads two things once: the data (124 MB, into `data/`) and the
@@ -119,92 +117,14 @@ redistribute them: `data.py` downloads the file into `data/`, which git ignores.
 Check the [OPSD](https://open-power-system-data.org/) and
 [ENTSO-E](https://transparency.entsoe.eu/) terms before republishing the data.
 
-## How the code is laid out
+## Examples
 
-| File | What it does |
-|---|---|
-| `data.py` | Downloads the OPSD file once, extracts load and grid-operator forecasts per country, builds the holiday indicator |
-| `forecasting.py` | The Timestral wrapper: pandas in, pandas out. `forecast()` for one forecast, `rolling()` for a forecast every day or week |
-| `plots.py` | Matplotlib charts, one small panel per country |
-| `main.py` | The three commands: `forecast`, `backtest`, `anomalies` |
+### 1. Forecast the next month (`main.py forecast`)
 
-```mermaid
-flowchart LR
-    W["OPSD website"] --> D["data.py<br/>load_power_data"]
-    D --> L["Hourly load per country<br/>+ grid operators' forecasts"]
-    D --> HI["data.py<br/>holiday_indicator"]
-    L --> M["main.py"]
-    HI --> M
-    M -- "forecast, backtest" --> FC["forecasting.py<br/>forecast"]
-    M -- "backtest, anomalies" --> RO["forecasting.py<br/>rolling"]
-    FC --> T["Timestral"]
-    RO --> T
-    T --> Q["Quantile forecasts"]
-    Q --> M
-    M --> P["plots.py"]
-    M --> O["output/<br/>CSV + PNG per command"]
-    P --> O
-```
-
-### Step 1: from the OPSD file to time series (`data.py`)
-
-```mermaid
-flowchart LR
-    A["Download once<br/>124 MB CSV into data/"] --> B["Read only the needed columns<br/>load + operator forecast per country"]
-    B --> C["Hourly frames indexed by UTC time<br/>one column per country, in MW"]
-    C --> E["Holiday indicator per country<br/>1 on national public holidays, local time"]
-```
-
-- `load_power_data()` returns two frames, `load` and `tso_forecast`, each with one
-  column per country and one row per hour. The few missing hours stay `NaN`, which
-  Timestral treats as missing.
-- `holiday_indicator()` marks every hour that falls on a national public holiday in
-  that country (using the `holidays` package, in local time). Holidays are known in
-  advance, so this can be computed for the forecast horizon too.
-
-### Step 2: calling Timestral (`forecasting.py`)
-
-The whole Timestral API used here is two calls:
-
-```python
-from timestral import TimestralForecaster
-
-forecaster = TimestralForecaster.from_pretrained("mistralai/Timestral-209M", quantile_real_cap_k=1.0)
-result = forecaster.forecast(
-    context,                    # (countries, hours) array of load, NaN = missing
-    prediction_length=720,      # 30 days
-    known_covariates=holidays,  # (countries, 1, hours + 720): 1 on public holidays, else 0
-)
-result.quantiles                # (countries, 1, 720, 21): 21 quantiles per forecast hour
-result.quantile(0.9)            # (countries, 1, 720)
-```
-
-A few things worth knowing:
-
-- **All countries go in one batch.** Each column becomes one row of `context`, and
-  Timestral forecasts every row independently in one call. Germany and Spain, at very
-  different scales, sit side by side: Timestral rescales each row internally.
-- **The output is a distribution, not one number.** For every future hour you get
-  21 quantiles (1%, 5%, 10%, ..., 95%, 99%). The demo keeps a lower and an upper
-  quantile as an interval, plus the median (the best guess per hour) and the mean
-  (`_mean()`, the area under the quantile curve), which is what adds up into energy
-  totals.
-- **Public holidays are a known-future covariate.** Timestral recognises a row of 0s
-  and 1s as an indicator. It makes no difference in an ordinary month and a large one
-  around holidays: over Christmas 2019, the day-ahead error fell from 4.25% to 3.30%
-  (Italy: 6.41% to 3.82%). Any covariate costs about 4x in speed.
-- **`rolling()` is the workhorse** for backtests and anomalies. It forecasts block
-  after block (each day, or each week), every block only from the 2,048 hours (~12
-  weeks) before it. Every (block, country) pair becomes a row of one batch.
-- **`quantile_real_cap_k=1.0`.** With the holiday covariate, the 99% quantile for
-  Christmas Day in Great Britain blew up to 37.8 million MW; medians were fine. This
-  library setting keeps every forecast within one "typical swing" of the range the
-  history has seen. See [03-python-library.md](docs/03-python-library.md#capping-extreme-quantiles-quantile_real_cap_k).
-
-### Requirement 1: forecast the next month (`main.py forecast`)
-
-`forecast()` gives the model the full history (it reads the last 32,768 hours, ~3.7
-years) and asks for the next 720 hours, with the holidays over that period.
+The model reads the whole history (the last 32,768 hours it can take, ~3.7 years, up to
+30 September 2020 23:00 UTC) and, in **one go**, forecasts every hour of the next 30
+days: 720 numbers per country. Nothing new is learned along the way: the forecast for
+29 October is made on 30 September, like the one for 1 October.
 
 ```
 Forecast for 2020-10-01 00:00 .. 2020-10-30 23:00 UTC
@@ -224,102 +144,84 @@ less. GWh add up the hourly mean forecasts; peaks are the highest hourly median.
 ![forecast](output/forecast.png)
 
 The forecast continues the daily and weekly rhythm, and its 80% band widens slowly the
-further out it goes. Two details show the model at work: France and Great Britain
-trend upwards into the heating season, and Germany's first weekend dips deeper than
-the others because Saturday 3 October is German Unity Day, which the holiday covariate
-announced.
+further out it goes: the model is less sure about the end of the month than about
+tomorrow. Germany's first weekend dips deeper than the others because Saturday
+3 October is German Unity Day, which the holiday covariate announced.
 
-### Requirement 2: how good is the forecast? (`main.py backtest`)
+### 2. How good is the forecast? (`main.py backtest`)
 
-To test a forecast honestly, give the model only the history up to a cutoff, forecast
-the period after it, and compare with what really happened. The backtest does two
-kinds of forecast over the 30 days after the cutoff (default 2020-08-31; pick another
-with `--cutoff`):
+We can't score the October forecast: the data ends in September. So we go back in time,
+forecast a month we *do* know, and compare with what happened. This is a
+**backtest**.
 
-- **Month ahead**: one forecast for all 30 days, made at the cutoff, as the `forecast`
-  command does.
-- **Day ahead**: every day at 08:00 UTC, a forecast for the *next* day, from the 2,048
-  hours before it. 08:00 UTC is when the grid operators' own forecasts must be ready
-  (10:00 CET, two hours before the day-ahead market closes), so Timestral never knows
-  more than they did.
+The backtest makes **day-ahead** forecasts, the kind the grid operators publish, so
+the two can be compared fairly. *Day ahead* means: each day, forecast only the next
+day. For example, to forecast **Thursday 10 September 2020**:
+
+1. On **Wednesday 9 September at 08:00 UTC**, give the model the 2,048 hours (~12
+   weeks) of load up to that moment. Nothing later.
+2. The model forecasts the hours from there to the end of Thursday. The 16 hours left
+   of Wednesday are thrown away; **Thursday's 24 hours** are kept.
+3. Compare those 24 hours with Thursday's actual load, and with the forecast the grid
+   operator published on Wednesday morning.
 
 ```mermaid
 gantt
-    title Default backtest, cutoff 2020-08-31
-    dateFormat YYYY-MM-DD
-    axisFormat %b %d
-    section Month ahead
-    seen by the model                 :done, 2020-08-01, 2020-09-01
-    one forecast for all 30 days      :crit, 2020-09-01, 30d
-    section Day ahead (e.g. for Sep 10)
-    seen by the model                 :done, 2020-08-01, 2020-09-09
-    gap from 08:00 to midnight        :active, 2020-09-09, 1d
-    forecast for Sep 10               :crit, 2020-09-10, 1d
+    title Day-ahead forecast for Thursday 10 September 2020
+    dateFormat YYYY-MM-DD HH:mm
+    axisFormat %a %d
+    section Model
+    history seen (12 weeks, end shown) :done, 2020-09-07 00:00, 2020-09-09 08:00
+    forecast, not scored                :active, 2020-09-09 08:00, 2020-09-10 00:00
+    forecast, scored against reality    :crit, 2020-09-10 00:00, 2020-09-11 00:00
 ```
 
-Scores are the **mean absolute percentage error** (MAPE): how many % off the forecast
-was, on average over all hours. Lower is better.
+Why 08:00 UTC? It is when the grid operators' forecasts must be ready (10:00 CET, two
+hours before the day-ahead electricity market closes). Forecasting from then means
+Timestral never knows more than the operators did.
+
+The same is done for each of the 30 days of September 2020: 30 separate forecasts per
+country, each made the morning before, each from the 12 weeks before it. (Pick another
+month with `--cutoff`, the day before the first day to forecast.)
+
+The score is the **mean absolute percentage error** (MAPE): how many % off the forecast
+was, on average over all 720 hours. Lower is better.
 
 ```
-Model saw data up to 2020-08-31; forecast 2020-09-01 .. 2020-09-30 (UTC)
+Day-ahead forecasts for 2020-09-01 .. 2020-09-30 (UTC), each made at 08:00 UTC the day before from the 2048 hours up to then
 
-    month-ahead timestral  month-ahead last-week  day-ahead timestral  day-ahead grid operator  day-ahead last-week  month-ahead in 80% interval
-DE                   1.53                   2.97                 1.50                     2.03                 2.26                          98%
-FR                   2.31                   4.20                 1.80                     1.65                 2.94                          96%
-IT                   4.43                   5.22                 2.21                     1.89                 5.14                          90%
-ES                   2.67                   7.05                 1.91                     0.92                 4.18                          97%
-GB                   4.96                   6.75                 4.76                     6.50                 6.72                          97%
+Mean absolute percentage error (MAPE), lower is better:
+
+    timestral  grid operator  last week timestral in 80% interval
+DE       1.50           2.03       2.26                       87%
+FR       1.80           1.65       2.94                       79%
+IT       2.21           1.89       5.14                       89%
+ES       1.91           0.92       4.18                       86%
+GB       4.76           6.50       6.72                       80%
 ```
 
 How to read it:
 
-- **Against "last week"** (repeat the same hour one week earlier), Timestral wins
-  everywhere, month ahead and day ahead.
-- **Against the grid operators**, day ahead, Timestral wins in **Germany and Great
-  Britain** and loses in **France, Italy and Spain**. The operators feed weather
-  forecasts into their models; Timestral sees only past load and holidays. Spain's
-  operator is remarkably accurate (0.92%).
-- **Even a month ahead**, Timestral beat the operators' *day-ahead* forecasts in
-  Germany (1.53% vs 2.03%) and Great Britain (4.96% vs 6.50%).
-- **In 80% interval**: the share of hours inside the month-ahead 10%-90% band. If the
-  band were perfectly calibrated, it would be about 80%. At 90-98% the bands are too
-  wide: cautious, so they can be trusted, but less informative than they could be.
+- **Against "last week"** (repeat the same hour one week earlier), Timestral wins in
+  every country.
+- **Against the grid operators**, Timestral wins in **Germany and Great Britain** and
+  loses in **France, Italy and Spain**. The operators feed weather forecasts into their
+  models; Timestral sees only past load and holidays. Spain's operator is remarkably
+  accurate (0.92%).
+- **In 80% interval**: the share of hours that fell inside Timestral's 10%-90% band.
+  If the band means what it says, that is about 80%, and it is: 79-89%.
 
 ![backtest](output/backtest-2020-08-31.png)
 
-#### The same, just before the lockdowns
-
-`uv run main.py backtest --cutoff 2020-03-08` makes the model forecast 9 March to
-7 April 2020 from data up to 8 March, the day before Italy locked down:
-
-```
-    month-ahead timestral  month-ahead last-week  day-ahead timestral  day-ahead grid operator  day-ahead last-week  month-ahead in 80% interval
-DE                   5.25                   7.96                 2.61                     4.45                 4.32                          55%
-FR                   9.66                  25.85                 4.34                     2.95                11.49                          70%
-IT                  23.56                  28.06                 2.54                     2.71                 8.88                           4%
-ES                  11.17                  14.72                 2.62                     2.48                 6.46                          32%
-GB                   9.81                  14.64                 5.67                     8.01                 8.64                          67%
-```
-
-- **The month-ahead forecast had no way to know.** In Italy it was off by 23.6% on
-  average, and only 4% of hours fell inside its 80% band: the model was confidently
-  wrong, as anyone would have been on 8 March.
-- **The day-ahead forecasts adapted within days**, because they re-read the latest
-  history every day. During the lockdown they beat the grid operators in Germany,
-  Italy and Great Britain. The operators struggled too: their errors were 1.2x (Great
-  Britain) to 2.7x (Spain) their September 2020 level.
-
-![backtest before the lockdowns](output/backtest-2020-03-08.png)
-
-### Requirement 3: anomalies in the past (`main.py anomalies`)
+### 3. Anomalies in the past (`main.py anomalies`)
 
 The idea: **an anomaly is a period the model was confident would not happen.**
 
-`rolling()` replays the past block by block. Every block is forecast only from the
-2,048 hours before it, like a forecaster running every week would have. An hour is
-"outside" when actual load falls outside the forecast's **1%-99% interval**; a day is
-**anomalous** when at least 6 of its 24 hours are outside (`--min-hours`).
-Consecutive anomalous days of the same country form one **episode**.
+The anomaly detector replays the past one week at a time, with **week-ahead**
+forecasts: like the day-ahead backtest, but each forecast covers the next 7 days.
+To judge the week starting **Monday 9 March 2020**, the model gets the 2,048 hours up
+to Sunday midnight and forecasts the whole week. Then it does the same for the week of
+16 March, and so on, from 30 September 2019 to 27 September 2020.
 
 ```mermaid
 gantt
@@ -334,21 +236,15 @@ gantt
     forecast vs actual                   :crit, 2020-03-16, 7d
 ```
 
-**The horizon decides what you can see.** The lockdown drops built up over a week or
-two. A *day-ahead* detector re-reads yesterday every day, so it adapts step by step
-and never sees a big surprise: it misses the lockdowns entirely. A *week-ahead*
-detector (the default, `--horizon 168`) forecasts a whole week from the history before
-it, so the first lockdown week stands out. Day-ahead is better at sharp one-day
-events.
+An hour is "outside" when actual load falls outside the forecast's **1%-99%
+interval**; a day is **anomalous** when at least 6 of its 24 hours are outside
+(`--min-hours`). Consecutive anomalous days of the same country form one **episode**.
 
-```mermaid
-flowchart LR
-    A["Lockdown: demand falls<br/>over 1-2 weeks"] --> B{"Detector horizon"}
-    B -- "day-ahead (24 h)" --> C["Each day is forecast from yesterday,<br/>which was already lower:<br/>small surprises, not flagged"]
-    B -- "week-ahead (168 h)" --> D["The whole week is forecast from<br/>before the drop:<br/>big surprise, flagged"]
-```
-
-Week-ahead, with holidays (the default), 30 September 2019 to 27 September 2020:
+Why a week and not a day? The lockdowns cut demand gradually, over a week or two. A
+forecast made the day before has already seen yesterday's lower demand, so each day
+looks only slightly off. A forecast made at the start of the week hasn't, so the whole
+drop shows. (`--horizon 24` switches to day-ahead, which suits sharp one-day events
+instead.)
 
 ```
 Calibration up to 2020-02-29: 0.6% of hours above the 99% line, 1.2% below the 1% line (expected: about 1% each).
@@ -385,28 +281,9 @@ country  kind      first       last  days  avg deviation %
 Each panel shows a country's daily energy: blue is actual, orange is what the
 week-ahead forecast expected, red dots are anomalous days, and the dashed line marks
 the start of the lockdown. The orange line follows the lockdown drop one week late,
-exactly how a rolling forecaster behaves.
+exactly how a forecaster running every week behaves.
 
-What each detector caught around the lockdowns:
-
-| Country | Lockdown starts | Day-ahead (`--horizon 24`) | Week-ahead (default) |
-|---|---|---|---|
-| Italy | 10 March | nothing | 13-15 March, -11% |
-| Spain | 15 March | nothing | 19 March, -11% |
-| France | 17 March | nothing | 19 March, -20% |
-| Great Britain | 23 March | nothing | 26 March, -13% |
-| Germany | 22 March | nothing | nothing |
-
-The day-ahead detector flags 29 single days instead (`output/anomalies-24h.png`): sharp
-one-day events such as the daylight-saving switches, France's reopening day and days
-right after holidays.
-
-**The holiday covariate matters here.** Without it (`--no-holidays`), the week-ahead
-detector flags 70 days instead of 52, and 2.6% of pre-pandemic hours fall below the 1%
-line instead of 1.2%: New Year, Easter, 1 May and other holidays all look like
-anomalies.
-
-More on how it works, the results day by day, and the pitfalls (clock changes, the
+More on how it works, the day-ahead variant, and the pitfalls (clock changes, the
 holiday calendar, an exploding 99% line on Christmas Day) in
 [04-anomaly-detection.md](docs/04-anomaly-detection.md).
 

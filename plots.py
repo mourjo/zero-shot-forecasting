@@ -13,7 +13,7 @@ from forecasting import QuantileForecast
 
 ACTUAL = "#2a78d6"
 FORECAST = "#eb6834"
-DAY_AHEAD = "#1baf7a"
+OPERATOR = "#1baf7a"
 ANOMALY = "#e34948"
 INK = "#52514e"
 GRID = "#e4e3df"
@@ -58,18 +58,17 @@ def plot_forecast(history: pd.DataFrame, fc: QuantileForecast, path: Path, show_
     _save(fig, axes, path)
 
 
-def plot_backtest(seen: pd.DataFrame, hidden: pd.DataFrame, month: QuantileForecast, day: QuantileForecast,
-                  path: Path, show_days: int = 14):
+def plot_backtest(seen: pd.DataFrame, hidden: pd.DataFrame, day: QuantileForecast, operator: pd.DataFrame,
+                  path: Path, show_days: int = 7):
     context = seen.iloc[-show_days * 24:]
     fig, axes = _panels(list(seen.columns),
-                        f"Backtest: forecasts from {seen.index[-1]:%Y-%m-%d} vs what happened", "MW")
+                        f"Backtest: day-ahead forecasts from {hidden.index[0]:%Y-%m-%d} vs what happened", "MW")
     for ax, code in zip(axes, seen.columns):
-        ax.plot(context.index, context[code], color=ACTUAL, linewidth=0.8, label="seen by the model")
-        ax.plot(hidden.index, hidden[code], color=ACTUAL, linewidth=0.8, linestyle=(0, (2, 2)),
-                label="hidden from the model")
-        ax.axvline(seen.index[-1], color=INK, linewidth=0.8)
-        _band(ax, month, code, "month-ahead forecast")
-        ax.plot(day.median.index, day.median[code], color=DAY_AHEAD, linewidth=0.8, label="day-ahead forecast")
+        ax.plot(context.index, context[code], color=ACTUAL, linewidth=0.8, label="before the backtest")
+        ax.plot(hidden.index, hidden[code], color=ACTUAL, linewidth=0.8, linestyle=(0, (2, 2)), label="actual")
+        ax.axvline(hidden.index[0], color=INK, linewidth=0.8)
+        _band(ax, day, code, "Timestral day-ahead")
+        ax.plot(operator.index, operator[code], color=OPERATOR, linewidth=0.8, label="grid operator day-ahead")
     _save(fig, axes, path)
 
 
