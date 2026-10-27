@@ -1,173 +1,132 @@
 # zero-shot-forecasting
 
-## Goal
+Automated anomaly detection on real data with a **time series foundation model**, no
+machine learning experience needed.
 
-Explore what **time series foundation models (TSFMs)** can do on real data.
+## The input
 
-A TSFM is pretrained once, on a large and varied collection of time series. It then
-forecasts series it has never seen *zero-shot*: you give it the history and it
-forecasts right away, with no training, fitting or tuning on your data. That is a
-big change from classic forecasting, where you build and fit a model for each
-dataset.
+Hourly electricity demand (load) in five European countries, in megawatts (MW), from
+2015 to September 2020. It comes from
+[Open Power System Data](https://data.open-power-system-data.org/time_series/), which
+collects what Europe's grid operators publish on the ENTSO-E Transparency Platform.
+A few sample rows:
 
-This project puts that promise to the test with
-[Timestral](https://mistral.ai/news/timestral/), Mistral's TSFM, on hourly electricity
-demand in five European countries, 2015-2020, including the COVID-19 lockdowns. It
-covers three common tasks:
+| time (UTC) | Germany | France | Italy | Spain | Great Britain |
+|---|---|---|---|---|---|
+| 2020-03-02 06:00 | 65,838 | 66,270 | 35,176 | 29,200 | 38,178 |
+| 2020-03-02 07:00 | 66,800 | 68,659 | 40,259 | 31,353 | 42,669 |
+| 2020-03-02 08:00 | 67,032 | 70,363 | 41,955 | 32,759 | 44,722 |
+| 2020-03-02 09:00 | 67,977 | 70,442 | 42,109 | 33,539 | 44,679 |
+| 2020-03-02 10:00 | 68,588 | 70,845 | 42,817 | 33,390 | 45,250 |
 
-1. **Forecast** demand for the next 30 days, hour by hour.
-2. **Backtest**: replay a past month day by day, forecasting each day from the
-   morning before, and score those forecasts against what actually happened, and
-   against the forecasts the grid operators themselves published.
-3. **Detect anomalies**: find past days that the model would not have expected, such
-   as the start of the lockdowns.
+That is 50,400 rows, one per hour. Each column is one **time series**: one number per
+hour, nothing else.
 
-Nothing is trained or fine-tuned anywhere in this project. The pretrained model gets
-the history as context and returns a probabilistic forecast directly.
+## The goal: automated anomaly detection
 
-More documentation in [`docs/`](docs):
+Find the hours and days when demand did something unexpected, in every country, without
+writing rules by hand. The data contains a real, unmistakable anomaly to check against:
+the COVID-19 lockdowns of March 2020.
 
-- [01-concepts.md](docs/01-concepts.md): the statistical ideas (quantile, covariate,
-  multivariate, backtesting...) explained without assuming any statistics background.
-- [02-capabilities.md](docs/02-capabilities.md): what Timestral can and can't do, and which
-  parts this project uses.
-- [03-python-library.md](docs/03-python-library.md): the `timestral` Python API, every
-  setting you can change, and their measured effect on speed and accuracy.
-- [04-anomaly-detection.md](docs/04-anomaly-detection.md): how forecast-based anomaly
-  detection works, how this project implements it, and how to tune it.
+## Why simple rules don't work
 
-## Quick start
+Here is Italy around its lockdown (10 March 2020), with two common ways to set an alert:
 
-```sh
-uv sync                                   # installs timestral from GitHub, plus pandas, matplotlib, holidays
-uv run main.py forecast                   # ~1 min
-uv run main.py backtest                   # ~1 min
-uv run main.py anomalies                  # ~2 min
+![signal](output/signal-IT.png)
+
+**A fixed threshold** ("if demand is below 25,000 MW, raise an alert") can't tell a
+lockdown from a Sunday. Demand swings every day, from ~21,000-25,000 MW at night to
+~44,000 MW around noon, and every week, with weekends far below weekdays. Before the lockdown, the
+threshold already fired on **15% of hours**: every night and every weekend. During the
+lockdown, weekday afternoons at 34,000 MW passed without a word. Move the line up and
+the false alarms grow; move it down and the lockdown disappears. And the right line is
+different for each country, each season, each year.
+
+**A moving average** ("alert if an hour is more than 2 standard deviations from the
+past week's average") does worse: it flagged **0% of hours**, before or during the
+lockdown. The daily swing is so large that the standard deviation is ~6,000 MW, so the
+band is ~24,000 MW wide and nothing ever leaves it. The average itself only drifts down
+a week after the drop. Shorter windows or tighter bands chase the daily cycle and fire
+every morning instead.
+
+You *can* build something better by hand: an average per hour of the week, a seasonal
+decomposition, a holiday calendar, a trend term, then tune it for each series. That is
+real modelling work, repeated for every metric you watch. What's needed is a model that
+already knows what "normal" looks like, *for this hour, this weekday, this time of
+year*, from the data alone.
+
+## Time series foundation models
+
+A large language model (LLM) is pretrained once on a huge amount of text. It then
+continues text it has never seen: you give it a prompt, it writes what comes next.
+
+A **time series foundation model (TSFM)** is the same idea for numbers. It is pretrained
+once on a large and varied collection of time series. You give it the history of a
+series it has never seen, and it forecasts what comes next: **zero-shot**, with no
+training, fitting or tuning on your data.
+
+| | LLM | TSFM |
+|---|---|---|
+| Pretrained on | lots of text | lots of time series |
+| You give it | a prompt | the history: an array of numbers |
+| It gives back | the next words | the next values, with a range of how sure it is |
+| Training on your data | none | none |
+
+That's why no ML experience is needed: there are no features to design, no model to
+choose, no parameters to tune. The whole API used here is two calls:
+
+```python
+from timestral import TimestralForecaster
+
+forecaster = TimestralForecaster.from_pretrained("mistralai/Timestral-209M")
+result = forecaster.forecast(history, prediction_length=24)  # history: (series, hours) array
+result.quantile(0.5)   # best guess for each of the next 24 hours
+result.quantile(0.99)  # a value it is 99% sure won't be exceeded
 ```
 
-The first run downloads two things once: the data (124 MB, into `data/`) and the
-Timestral-209M model (837 MB, into the Hugging Face cache). Times are for a laptop
-CPU. Every command prints a summary and writes a CSV and a chart to `output/`.
+This project uses **[Timestral](https://mistral.ai/news/timestral/)**, Mistral's TSFM
+(the 209M-parameter model, an 837 MB download). Public holidays are passed as an extra
+input, since they lower demand and are known in advance; everything else, it works out
+from the history.
 
+All runs were made on a **MacBook Air (M1, 2020), 16 GB of RAM, on the CPU** (no GPU):
+
+| Command | What it does | Time |
+|---|---|---|
+| `main.py forecast` | the next 30 days, 5 countries | ~45 s |
+| `main.py backtest` | 30 days of day-ahead forecasts, 5 countries | ~55 s |
+| `main.py anomalies` | a year of week-ahead forecasts, 5 countries | ~2 min |
+
+## What a TSFM can do
+
+The same model, called in three different ways.
+
+### 1. Forecast
+
+Give it the history up to now; it returns every hour of the next 30 days, each with a
+range.
+
+```mermaid
+flowchart LR
+    H["History<br/>up to 30 Sep 2020"] --> T["Timestral"]
+    T --> F["Next 30 days, hour by hour:<br/>best guess + 80% range"]
 ```
-uv run main.py [--countries DE,FR,IT,ES,GB] [--model HF_ID] [--no-holidays] forecast  [--days 30]
-uv run main.py [...] backtest  [--days 30] [--cutoff YYYY-MM-DD] [--context 2048]
-uv run main.py [...] anomalies [--start 2019-09-30] [--end YYYY-MM-DD] [--horizon 168] [--context 2048] [--min-hours 6]
-```
-
-`--model mistralai/Timestral-28M` is about 6x faster and only slightly less accurate
-(1.86% vs 1.81% average day-ahead error in September 2020). `--no-holidays` drops the
-public-holiday covariate: about 4x faster, but less accurate around holidays.
-
-## The data
-
-The data is the **[Open Power System Data](https://data.open-power-system-data.org/time_series/)
-(OPSD) time series package**, version 2020-10-06. OPSD collects European power-system
-data into clean, documented files. This package comes from the **ENTSO-E
-Transparency Platform**, where Europe's grid operators are legally required to
-publish their data.
-
-| | |
-|---|---|
-| File | `time_series_60min_singleindex.csv`, 124 MB |
-| Resolution | one row per hour, timestamps in UTC |
-| Period | 2015-01-01 to 2020-09-30: 50,400 hours, almost six years |
-| Coverage | about 30 European countries: electricity load, the grid operators' load forecasts, solar and wind generation, some prices |
-
-This project uses two columns per country:
-
-- **Actual load** (`<country>_load_actual_entsoe_transparency`): the electricity
-  demand on the grid, in megawatts (MW), for each hour. This is what is forecast.
-- **Grid operator's forecast** (`<country>_load_forecast_entsoe_transparency`): the
-  day-ahead forecast that country's grid operator (TSO) published. Grid operators
-  must publish it by two hours before the day-ahead market closes (12:00 CET) on the
-  day before. Built with weather forecasts and years of tuning, it is a professional
-  baseline to compare Timestral against.
-
-The five countries:
-
-| Country | Average load | Missing hours | First lockdown | Load in April 2020 vs April 2019 |
-|---|---|---|---|---|
-| Germany (DE) | 55 GW | 0 | 22 March 2020 | -9% |
-| France (FR) | 53 GW | 41 | 17 March 2020 | -17% |
-| Italy (IT) | 33 GW | 2 | 10 March 2020 | -22% |
-| Spain (ES) | 28 GW | 20 | 15 March 2020 | -17% |
-| Great Britain (GB) | 35 GW | 6 | 23 March 2020 | -14% |
-
-(1 GW = 1,000 MW. For Great Britain the file has `GB_GBN`, Great Britain without
-Northern Ireland. The lockdown dates are when the measures were announced or took
-effect, give or take a day; Germany's is the nationwide contact ban.)
-
-Why this dataset suits a TSFM demo:
-
-- **Rich, regular patterns.** Daily, weekly and yearly cycles at once: in Germany in
-  2019, Sundays averaged ~46 GW against ~59 GW on weekdays, and January ~62 GW
-  against July ~54 GW.
-- **Long history.** 50,400 hours, more than Timestral's 32,768-step context, so the
-  model can use all it can read.
-- **A useful covariate.** Public holidays lower demand and are known years ahead,
-  which makes them a natural known-future covariate.
-- **A professional baseline**, right in the data: the grid operators' own forecasts.
-- **A real, unmistakable anomaly**: the spring 2020 lockdowns.
-- **Five countries** to forecast in one batch, at very different scales.
-
-**Licence and attribution.** The data is by Open Power System Data, from ENTSO-E
-Transparency. The OPSD files don't state a data licence, so this repo doesn't
-redistribute them: `data.py` downloads the file into `data/`, which git ignores.
-Check the [OPSD](https://open-power-system-data.org/) and
-[ENTSO-E](https://transparency.entsoe.eu/) terms before republishing the data.
-
-## Examples
-
-### 1. Forecast the next month (`main.py forecast`)
-
-The model reads the whole history (the last 32,768 hours it can take, ~3.7 years, up to
-30 September 2020 23:00 UTC) and, in **one go**, forecasts every hour of the next 30
-days: 720 numbers per country. Nothing new is learned along the way: the forecast for
-29 October is made on 30 September, like the one for 1 October.
-
-```
-Forecast for 2020-10-01 00:00 .. 2020-10-30 23:00 UTC
-
-    last 30 days GWh (actual)  next 30 days GWh (forecast)  peak MW (actual)  peak MW (forecast)
-DE                      37905                        39507             68303               68709
-FR                      31821                        34962             57680               59257
-IT                      24123                        22248             44649               40129
-ES                      19392                        18608             34676               31519
-GB                      21172                        23703             41408               44089
-```
-
-Germany is forecast to use about **39.5 TWh** (39,507 GWh) in October 2020, 4% more
-than in September; France and Britain more (heating season), Italy and Spain slightly
-less. GWh add up the hourly mean forecasts; peaks are the highest hourly median.
 
 ![forecast](output/forecast.png)
 
-The forecast continues the daily and weekly rhythm, and its 80% band widens slowly the
-further out it goes: the model is less sure about the end of the month than about
-tomorrow. Germany's first weekend dips deeper than the others because Saturday
-3 October is German Unity Day, which the holiday covariate announced.
+It continues the daily and weekly rhythm, and the range widens the further out it goes.
+Germany's first weekend dips deeper because Saturday 3 October is a public holiday.
 
-### 2. How good is the forecast? (`main.py backtest`)
+### 2. Backtest: can the forecasts be trusted?
 
-We can't score the October forecast: the data ends in September. So we go back in time,
-forecast a month we *do* know, and compare with what happened. This is a
-**backtest**.
-
-The backtest makes **day-ahead** forecasts, the kind the grid operators publish, so
-the two can be compared fairly. *Day ahead* means: each day, forecast only the next
-day. For example, to forecast **Thursday 10 September 2020**:
-
-1. On **Wednesday 9 September at 08:00 UTC**, give the model the 2,048 hours (~12
-   weeks) of load up to that moment. Nothing later.
-2. The model forecasts the hours from there to the end of Thursday. The 16 hours left
-   of Wednesday are thrown away; **Thursday's 24 hours** are kept.
-3. Compare those 24 hours with Thursday's actual load, and with the forecast the grid
-   operator published on Wednesday morning.
+The future can't be checked yet, so go back in time: forecast a past month as if it
+hadn't happened, and compare with what did. Here, every day of September 2020 is
+forecast at 08:00 the morning before, from the 12 weeks up to then: exactly when and
+what the grid operators forecast.
 
 ```mermaid
 gantt
-    title Day-ahead forecast for Thursday 10 September 2020
+    title Forecasting Thursday 10 September 2020
     dateFormat YYYY-MM-DD HH:mm
     axisFormat %a %d
     section Model
@@ -176,129 +135,86 @@ gantt
     forecast, scored against reality    :crit, 2020-09-10 00:00, 2020-09-11 00:00
 ```
 
-Why 08:00 UTC? It is when the grid operators' forecasts must be ready (10:00 CET, two
-hours before the day-ahead electricity market closes). Forecasting from then means
-Timestral never knows more than the operators did.
-
-The same is done for each of the 30 days of September 2020: 30 separate forecasts per
-country, each made the morning before, each from the 12 weeks before it. (Pick another
-month with `--cutoff`, the day before the first day to forecast.)
-
-The score is the **mean absolute percentage error** (MAPE): how many % off the forecast
-was, on average over all 720 hours. Lower is better.
-
-```
-Day-ahead forecasts for 2020-09-01 .. 2020-09-30 (UTC), each made at 08:00 UTC the day before from the 2048 hours up to then
-
-Mean absolute percentage error (MAPE), lower is better:
-
-    timestral  grid operator  last week timestral in 80% interval
-DE       1.50           2.03       2.26                       87%
-FR       1.80           1.65       2.94                       79%
-IT       2.21           1.89       5.14                       89%
-ES       1.91           0.92       4.18                       86%
-GB       4.76           6.50       6.72                       80%
-```
-
-How to read it:
-
-- **Against "last week"** (repeat the same hour one week earlier), Timestral wins in
-  every country.
-- **Against the grid operators**, Timestral wins in **Germany and Great Britain** and
-  loses in **France, Italy and Spain**. The operators feed weather forecasts into their
-  models; Timestral sees only past load and holidays. Spain's operator is remarkably
-  accurate (0.92%).
-- **In 80% interval**: the share of hours that fell inside Timestral's 10%-90% band.
-  If the band means what it says, that is about 80%, and it is: 79-89%.
+Repeat for each of the 30 days. On average the forecasts were **1.5-2.2% off** in
+Germany, France, Italy and Spain (4.8% in Great Britain). That beats the grid
+operators' own forecasts in Germany and Great Britain, which use weather forecasts that
+Timestral doesn't have. And the 80% ranges held 79-89% of the real values: when the
+model says it is 80% sure, it is about right.
 
 ![backtest](output/backtest-2020-08-31.png)
 
-### 3. Anomalies in the past (`main.py anomalies`)
+### 3. Detect anomalies
 
-The idea: **an anomaly is a period the model was confident would not happen.**
-
-The anomaly detector replays the past one week at a time, with **week-ahead**
-forecasts: like the day-ahead backtest, but each forecast covers the next 7 days.
-To judge the week starting **Monday 9 March 2020**, the model gets the 2,048 hours up
-to Sunday midnight and forecasts the whole week. Then it does the same for the week of
-16 March, and so on, from 30 September 2019 to 27 September 2020.
+If the forecasts and their ranges can be trusted, an anomaly is simply **what the model
+was confident would not happen**. Replay the past one week at a time: forecast each
+week only from the hours before it, then flag the days when actual demand fell outside
+the model's 1%-99% range for at least 6 hours.
 
 ```mermaid
-gantt
-    title Week-ahead: each week is judged by a forecast made only from earlier hours
-    dateFormat YYYY-MM-DD
-    axisFormat %b %d
-    section Judge week of Mar 9
-    history the model sees (2,048 hours) :done, 2020-02-24, 2020-03-09
-    forecast vs actual                   :crit, 2020-03-09, 7d
-    section Judge week of Mar 16
-    history the model sees (2,048 hours) :done, 2020-02-24, 2020-03-16
-    forecast vs actual                   :crit, 2020-03-16, 7d
+flowchart LR
+    H["History up to<br/>Sunday midnight"] --> T["Timestral"]
+    T --> R["Expected range<br/>for each hour of the week"]
+    A["What actually<br/>happened"] --> C{"Outside the range<br/>for 6+ hours?"}
+    R --> C
+    C -- "yes" --> X["Anomalous day"]
+    C -- "no" --> N["Normal day"]
 ```
-
-An hour is "outside" when actual load falls outside the forecast's **1%-99%
-interval**; a day is **anomalous** when at least 6 of its 24 hours are outside
-(`--min-hours`). Consecutive anomalous days of the same country form one **episode**.
-
-Why a week and not a day? The lockdowns cut demand gradually, over a week or two. A
-forecast made the day before has already seen yesterday's lower demand, so each day
-looks only slightly off. A forecast made at the start of the week hasn't, so the whole
-drop shows. (`--horizon 24` switches to day-ahead, which suits sharp one-day events
-instead.)
-
-```
-Calibration up to 2020-02-29: 0.6% of hours above the 99% line, 1.2% below the 1% line (expected: about 1% each).
-
-country  kind      first       last  days  avg deviation %
-     FR spike 2019-11-07 2019-11-10     4             16.8
-     FR spike 2020-05-11 2020-05-14     4             10.8
-     IT  drop 2019-12-18 2019-12-21     4             -8.3
-     IT spike 2020-06-25 2020-06-28     4             10.0
-     IT  drop 2020-08-03 2020-08-06     4            -13.4
-     IT  drop 2020-03-13 2020-03-15     3            -11.3
-     DE  drop 2019-12-23 2019-12-24     2            -17.6
-     ES  drop 2019-12-24 2019-12-25     2            -15.3
-...
-     ES  drop 2020-03-19 2020-03-19     1            -11.4
-     FR  drop 2020-03-19 2020-03-19     1            -19.9
-     GB  drop 2020-03-26 2020-03-26     1            -13.4
-...
-```
-
-- **Calibration first**: before the pandemic, about 1% of hours fell above the 99% line
-  and about 1% below the 1% line, as they should. The band can be trusted, so what
-  falls outside it is worth a look.
-- **The lockdowns**: the first lockdown week is flagged in Italy (13-15 March, -11%),
-  France (19 March, -20%), Spain (19 March, -11%) and Great Britain (26 March, -13%).
-  Germany's drop (~9%) was too small and gradual to stand out.
-- **France's reopening** on 11 May 2020 shows as a spike: demand came back faster than
-  a forecast made from lockdown weeks expected.
-- **What the holiday calendar doesn't know**: Christmas week, August shutdowns in
-  Italy and Spain, regional holidays in Germany.
 
 ![anomalies](output/anomalies-168h.png)
 
-Each panel shows a country's daily energy: blue is actual, orange is what the
-week-ahead forecast expected, red dots are anomalous days, and the dashed line marks
-the start of the lockdown. The orange line follows the lockdown drop one week late,
-exactly how a forecaster running every week behaves.
+With no rules and no tuning per country, it flags the first lockdown week in Italy,
+France, Spain and Great Britain, France's reopening in May as a spike, and the days the
+holiday calendar doesn't cover, such as Christmas week and Italy's August shutdown.
+Before the pandemic, ~1% of hours fell above and ~1% below the range, as they should:
+it doesn't cry wolf.
 
-More on how it works, the day-ahead variant, and the pitfalls (clock changes, the
-holiday calendar, an exploding 99% line on Christmas Day) in
-[04-anomaly-detection.md](docs/04-anomaly-detection.md).
+## A new frontier in software observability
 
-## Limitations
+Software systems are full of time series with exactly this shape: daily and weekly
+cycles, holidays, slow growth, sudden shifts. Most alerting still relies on the fixed
+thresholds and moving averages shown above. A TSFM could:
 
-- **No weather.** Electricity demand depends on temperature, and the grid operators
-  use weather forecasts. OPSD has no weather data; a temperature forecast as a
-  known-future covariate is the obvious next step.
-- **UTC hours.** The model sees UTC, so on the two daylight-saving switches each year
-  the daily pattern shifts by an hour, and those days can look odd.
-- **National holidays only.** Regional holidays (German states, Spanish regions) and
-  "bridge" days around holidays (such as 23-24 December) aren't in the calendar.
-- **Data ends in September 2020.** The 30-day forecast is for October 2020, a month
-  that can be checked against ENTSO-E's later data, but not with this file.
-- **Speed.** The day-ahead anomaly replay (~1,800 forecasts with the holiday
-  covariate) takes ~11 minutes on a laptop CPU. `--model mistralai/Timestral-28M` or
-  `--no-holidays` cut that sharply; see the
-  [performance tips](docs/03-python-library.md#performance-tips).
+- **Replace static alert thresholds** on request rates, latency, error rates, queue
+  depth, CPU and memory with "outside the expected range for this hour", so Monday
+  morning peaks and Sunday night lulls stop paging anyone.
+- **Watch business metrics** (sign-ups, checkouts, payments, log-ins) where a quiet
+  drop, such as a broken checkout button, matters more than a spike.
+- **Scale to thousands of metrics** with no per-metric setup: every series goes into
+  the same batch, like the five countries here.
+- **Catch slow drifts** (a memory leak, a growing backlog, a gradual slowdown after a
+  deploy) by forecasting a week ahead instead of a day, as the lockdowns showed.
+- **Plan capacity and cost**: forecast traffic, storage or cloud spend weeks ahead,
+  with a range rather than one number.
+- **Check releases**: compare a metric after a deploy with what the model expected
+  from before it.
+- **Use known events as inputs**: launches, sales or maintenance windows, passed in
+  advance like the public holidays here.
+
+What it won't do: tell you *why* something happened, or know about anything you don't
+pass in.
+
+## Quick start
+
+```sh
+uv sync                     # installs timestral from GitHub, plus pandas, matplotlib, holidays
+uv run main.py signal       # the chart above: fixed threshold and moving average (no model)
+uv run main.py forecast
+uv run main.py backtest
+uv run main.py anomalies
+```
+
+The first run downloads the data (124 MB, into `data/`) and the model (837 MB, into the
+Hugging Face cache). Every command prints a summary and writes a CSV or a chart to
+`output/`.
+
+## More
+
+- [05-walkthrough.md](docs/05-walkthrough.md): the full details: the data, every
+  command and option, all the results and the limitations.
+- [01-concepts.md](docs/01-concepts.md): the statistical ideas (quantile, covariate,
+  backtesting...) explained without assuming any statistics background.
+- [02-capabilities.md](docs/02-capabilities.md): what Timestral can and can't do.
+- [03-python-library.md](docs/03-python-library.md): the `timestral` Python API and
+  every setting.
+- [04-anomaly-detection.md](docs/04-anomaly-detection.md): how forecast-based anomaly
+  detection works and how to tune it.

@@ -1,5 +1,6 @@
 """Forecast, backtest and find anomalies in European electricity demand with Timestral.
 
+    uv run main.py signal     # the raw signal, with a fixed threshold and a moving average (no model)
     uv run main.py forecast   # the next 30 days, hour by hour
     uv run main.py backtest   # replay a past month day by day, compare with the grid operators
     uv run main.py anomalies  # days that fell outside the week-ahead forecast, e.g. COVID lockdowns
@@ -11,9 +12,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from data import DEFAULT_COUNTRIES, LOCKDOWNS, holiday_indicator, load_power_data
+from data import DEFAULT_COUNTRIES, LOCKDOWNS, country_name, holiday_indicator, load_power_data
 from forecasting import DEFAULT_MODEL, forecast, future_index, load_forecaster, rolling
-from plots import plot_anomalies, plot_backtest, plot_forecast
+from plots import plot_anomalies, plot_backtest, plot_forecast, plot_signal
 
 OUTPUT = Path("output")
 DAY = pd.Timedelta(days=1)
@@ -32,6 +33,29 @@ def mape(predicted: pd.DataFrame, actual: pd.DataFrame) -> pd.Series:
     """Mean absolute percentage error per country: on average, how many % off the forecast was."""
     actual = actual.loc[predicted.index]
     return ((predicted - actual).abs() / actual).mean() * 100
+
+
+def run_signal(power, args: argparse.Namespace):
+    """Why simple rules struggle: a fixed threshold and a moving-average band, without any model."""
+    code = args.country
+    load = power.load[code].loc[args.start:args.end]
+    week = 7 * 24
+    # Only the past week, so that the band at each hour uses no future data.
+    full = power.load[code]
+    average = full.rolling(week).mean().loc[load.index]
+    spread = full.rolling(week).std().loc[load.index]
+    path = OUTPUT / f"signal-{code}.png"
+    plot_signal(load, args.threshold, average, spread, LOCKDOWNS.get(code), path)
+
+    lockdown = pd.Timestamp(LOCKDOWNS[code], tz="UTC") if code in LOCKDOWNS else load.index[-1]
+    periods = {"before the lockdown": load.loc[:lockdown - pd.Timedelta(hours=1)],
+               "from the lockdown on": load.loc[lockdown:]}
+    outside = (load - average).abs() > 2 * spread
+    print(f"{country_name(code)}, {load.index[0]:%Y-%m-%d} .. {load.index[-1]:%Y-%m-%d} (UTC)\n")
+    for label, part in periods.items():
+        print(f"{label}: {(part < args.threshold).mean():.0%} of hours below {args.threshold:,.0f} MW, "
+              f"{outside.loc[part.index].mean():.0%} outside the moving-average band")
+    print(f"Wrote {path}")
 
 
 def run_forecast(power, args: argparse.Namespace):
@@ -162,6 +186,13 @@ def main():
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Hugging Face id, e.g. mistralai/Timestral-28M")
     parser.add_argument("--no-holidays", action="store_true", help="don't pass public holidays as a covariate")
     commands = parser.add_subparsers(dest="command", required=True)
+
+    p = commands.add_parser("signal", help="plot the raw signal against a fixed threshold and a moving average")
+    p.add_argument("--country", default="IT", help="one of DE,FR,IT,ES,GB")
+    p.add_argument("--start", default="2020-02-17", help="first day to plot, YYYY-MM-DD")
+    p.add_argument("--end", default="2020-03-29", help="last day to plot, YYYY-MM-DD")
+    p.add_argument("--threshold", type=float, default=25000, help="MW: hours below this are flagged")
+    p.set_defaults(run=run_signal)
 
     p = commands.add_parser("forecast", help="forecast the days after the last hour in the data")
     p.add_argument("--days", type=int, default=30, help="days to forecast")
