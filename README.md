@@ -1,15 +1,17 @@
 # zero-shot-forecasting
 
-Automated anomaly detection on real data with a **time series foundation model**, no
-machine learning experience needed.
+This project finds anomalies in real data with a time series foundation model. You do
+not need experience in machine learning to use it.
 
 ## The input
 
-Hourly electricity demand (load) in five European countries, in megawatts (MW), from
-2015 to September 2020. It comes from
-[Open Power System Data](https://data.open-power-system-data.org/time_series/), which
-collects what Europe's grid operators publish on the ENTSO-E Transparency Platform.
-A few sample rows:
+The input is the hourly electricity demand (load) of five European countries, from 2015
+to September 2020. The unit is megawatts (MW). The data comes from
+[Open Power System Data](https://data.open-power-system-data.org/time_series/). This
+source collects the data that the European grid operators publish on the ENTSO-E
+Transparency Platform.
+
+Sample rows:
 
 | time (UTC) | Germany | France | Italy | Spain | Great Britain |
 |---|---|---|---|---|---|
@@ -19,184 +21,215 @@ A few sample rows:
 | 2020-03-02 09:00 | 67,977 | 70,442 | 42,109 | 33,539 | 44,679 |
 | 2020-03-02 10:00 | 68,588 | 70,845 | 42,817 | 33,390 | 45,250 |
 
-That is 50,400 rows, one per hour. Each column is one **time series**: one number per
-hour, nothing else.
+The data has 50,400 rows, one row for each hour. Each column is one time series: one
+number for each hour.
 
-## The goal: automated anomaly detection
+The data contains a real anomaly: the COVID-19 lockdowns of March 2020. We use it to
+examine the results.
 
-Find the hours and days when demand did something unexpected, in every country, without
-writing rules by hand. The data contains a real, unmistakable anomaly to check against:
-the COVID-19 lockdowns of March 2020.
+## Why simple rules do not work
 
-## Why simple rules don't work
-
-Here is Italy around its lockdown (10 March 2020), with two common ways to set an alert:
+The chart shows Italy before and after the start of its lockdown on 10 March 2020. It
+also shows two usual methods to find anomalies.
 
 ![signal](output/signal-IT.png)
 
-**A fixed threshold** ("if demand is below 25,000 MW, raise an alert") can't tell a
-lockdown from a Sunday. Demand swings every day, from ~21,000-25,000 MW at night to
-~44,000 MW around noon, and every week, with weekends far below weekdays. Before the lockdown, the
-threshold already fired on **15% of hours**: every night and every weekend. During the
-lockdown, weekday afternoons at 34,000 MW passed without a word. Move the line up and
-the false alarms grow; move it down and the lockdown disappears. And the right line is
-different for each country, each season, each year.
+**A fixed threshold.** The rule is: "If the demand is less than 25,000 MW, send an
+alert." This rule cannot find the difference between a lockdown and a Sunday:
 
-**A moving average** ("alert if an hour is more than 2 standard deviations from the
-past week's average") does worse: it flagged **0% of hours**, before or during the
-lockdown. The daily swing is so large that the standard deviation is ~6,000 MW, so the
-band is ~24,000 MW wide and nothing ever leaves it. The average itself only drifts down
-a week after the drop. Shorter windows or tighter bands chase the daily cycle and fire
-every morning instead.
+- The demand changes much during each day. At night it is 21,000-25,000 MW. At noon it
+  is approximately 44,000 MW.
+- The demand also changes during each week. On weekends it is much lower than on
+  weekdays.
+- Before the lockdown, the rule sent an alert for 15% of all hours: each night and each
+  weekend.
+- During the lockdown, the demand on weekday afternoons was 34,000 MW. The rule did not
+  send an alert for these hours.
 
-You *can* build something better by hand: an average per hour of the week, a seasonal
-decomposition, a holiday calendar, a trend term, then tune it for each series. That is
-real modelling work, repeated for every metric you watch. What's needed is a model that
-already knows what "normal" looks like, *for this hour, this weekday, this time of
-year*, from the data alone.
+If you increase the threshold, you get more false alerts. If you decrease it, the rule
+does not find the lockdown. Also, each country, season and year needs a different
+threshold.
+
+**A moving average.** The rule is: "If an hour is more than 2 standard deviations from
+the average of the last week, send an alert." This rule sent an alert for 0% of the
+hours, before and during the lockdown:
+
+- The daily change in demand is large. Thus the standard deviation is approximately
+  6,000 MW, and the band is approximately 24,000 MW wide. No hour goes out of this band.
+- The average decreases only one week after the demand decreases.
+- A shorter window or a narrower band follows the daily cycle. Then the rule sends an
+  alert each morning.
+
+You can make a better model yourself. For example, you can use an average for each hour
+of the week, a seasonal decomposition, a holiday calendar and a trend. But you must
+adjust this model for each time series. You must do this work again for each metric that
+you monitor.
+
+Thus you need a model that knows the usual pattern for each hour, each weekday and each
+season. The model must learn this pattern from the data only.
 
 ## Time series foundation models
 
-A large language model (LLM) is pretrained once on a huge amount of text. It then
-continues text it has never seen: you give it a prompt, it writes what comes next.
+A large language model (LLM) learns from a very large quantity of text. This occurs one
+time, before you use the model. Then you give the model a prompt, and the model writes
+the next text.
 
-A **time series foundation model (TSFM)** is the same idea for numbers. It is pretrained
-once on a large and varied collection of time series. You give it the history of a
-series it has never seen, and it forecasts what comes next: **zero-shot**, with no
-training, fitting or tuning on your data.
+A time series foundation model (TSFM) uses the same method for numbers. It learns from a
+very large set of different time series. Then you give it the history of a new time
+series, and it forecasts the next values. This is "zero-shot" forecasting: you do not
+train, fit or adjust the model on your data.
 
 | | LLM | TSFM |
 |---|---|---|
-| Pretrained on | lots of text | lots of time series |
-| You give it | a prompt | the history: an array of numbers |
-| It gives back | the next words | the next values, with a range of how sure it is |
+| Learns from | a large quantity of text | a large set of time series |
+| Input | a prompt | the history: a list of numbers |
+| Output | the next words | the next values, with a range that shows the uncertainty |
 | Training on your data | none | none |
 
-That's why no ML experience is needed: there are no features to design, no model to
-choose, no parameters to tune. The whole API used here is two calls:
+Thus you do not need experience in machine learning. You do not design features, select
+a model or adjust parameters. This project uses only two calls:
 
 ```python
 from timestral import TimestralForecaster
 
 forecaster = TimestralForecaster.from_pretrained("mistralai/Timestral-209M")
 result = forecaster.forecast(history, prediction_length=24)  # history: (series, hours) array
-result.quantile(0.5)   # best guess for each of the next 24 hours
-result.quantile(0.99)  # a value it is 99% sure won't be exceeded
+result.quantile(0.5)   # the best estimate for each of the next 24 hours
+result.quantile(0.99)  # the value that the model is 99% sure the demand stays below
 ```
 
-This project uses **[Timestral](https://mistral.ai/news/timestral/)**, Mistral's TSFM
-(the 209M-parameter model, an 837 MB download). Public holidays are passed as an extra
-input, since they lower demand and are known in advance; everything else, it works out
-from the history.
+This project uses [Timestral](https://mistral.ai/news/timestral/), the TSFM from
+Mistral. The model has 209 million parameters, and the download is 837 MB. Public
+holidays decrease the demand, and we know their dates before they occur. Thus we give
+the holidays to the model as an extra input. The model gets all other information from
+the history.
 
-All runs were made on a **MacBook Air (M1, 2020), 16 GB of RAM, on the CPU** (no GPU):
+We ran all the commands on a MacBook Air (M1, 2020) with 16 GB of RAM. The model ran on
+the CPU, without a GPU.
 
-| Command | What it does | Time |
+| Command | Function | Time |
 |---|---|---|
-| `main.py forecast` | the next 30 days, 5 countries | ~45 s |
-| `main.py backtest` | 30 days of day-ahead forecasts, 5 countries | ~55 s |
-| `main.py anomalies` | a year of week-ahead forecasts, 5 countries | ~2 min |
+| `main.py forecast` | Forecasts the next 30 days for 5 countries | 42 s |
+| `main.py backtest` | Makes 30 day-ahead forecasts for 5 countries | 54 s |
+| `main.py anomalies` | Makes one year of week-ahead forecasts for 5 countries | 96 s |
 
-## What a TSFM can do
+## The functions of a TSFM
 
-The same model, called in three different ways.
+This project uses the same model in three different ways.
 
 ### 1. Forecast
 
-Give it the history up to now; it returns every hour of the next 30 days, each with a
-range.
+You give the model the history until now. The model gives each hour of the next 30
+days, with a range for each hour.
 
 ```mermaid
 flowchart LR
-    H["History<br/>up to 30 Sep 2020"] --> T["Timestral"]
-    T --> F["Next 30 days, hour by hour:<br/>best guess + 80% range"]
+    H["History<br/>until 30 Sep 2020"] --> T["Timestral"]
+    T --> F["Next 30 days, each hour:<br/>best estimate + 80% range"]
 ```
 
 ![forecast](output/forecast.png)
 
-It continues the daily and weekly rhythm, and the range widens the further out it goes.
-Germany's first weekend dips deeper because Saturday 3 October is a public holiday.
+The forecast continues the daily and weekly pattern. The range becomes wider for dates
+that are farther in the future. In Germany, the first weekend is lower than the other
+weekends, because Saturday 3 October is a public holiday.
 
-### 2. Backtest: can the forecasts be trusted?
+### 2. Backtest: examine the quality of the forecasts
 
-The future can't be checked yet, so go back in time: forecast a past month as if it
-hadn't happened, and compare with what did. Here, every day of September 2020 is
-forecast at 08:00 the morning before, from the 12 weeks up to then: exactly when and
-what the grid operators forecast.
+We cannot examine a forecast for the future yet. Thus we use a month in the past. The
+model forecasts this month without the data for it. Then we compare the forecast with
+the actual demand.
+
+For each day of September 2020, the model makes a forecast at 08:00 on the day before.
+It uses the 12 weeks of data until that time. The grid operators make their forecasts
+at the same time, with the same history.
 
 ```mermaid
 gantt
-    title Forecasting Thursday 10 September 2020
+    title Forecast for Thursday 10 September 2020
     dateFormat YYYY-MM-DD HH:mm
     axisFormat %a %d
     section Model
-    history seen (12 weeks, end shown) :done, 2020-09-07 00:00, 2020-09-09 08:00
-    forecast, not scored                :active, 2020-09-09 08:00, 2020-09-10 00:00
-    forecast, scored against reality    :crit, 2020-09-10 00:00, 2020-09-11 00:00
+    history (12 weeks, end shown)  :done, 2020-09-07 00:00, 2020-09-09 08:00
+    forecast, not compared          :active, 2020-09-09 08:00, 2020-09-10 00:00
+    forecast, compared with actual  :crit, 2020-09-10 00:00, 2020-09-11 00:00
 ```
 
-Repeat for each of the 30 days. On average the forecasts were **1.5-2.2% off** in
-Germany, France, Italy and Spain (4.8% in Great Britain). That beats the grid
-operators' own forecasts in Germany and Great Britain, which use weather forecasts that
-Timestral doesn't have. And the 80% ranges held 79-89% of the real values: when the
-model says it is 80% sure, it is about right.
+We do this for each of the 30 days. The results:
+
+- In Germany, France, Italy and Spain, the average error was 1.5-2.2%. In Great
+  Britain, it was 4.8%.
+- In Germany and Great Britain, the error was smaller than the error of the grid
+  operators' forecasts. The grid operators use weather forecasts. Timestral does not.
+- 79-89% of the actual values were in the 80% range. Thus the ranges are correct.
 
 ![backtest](output/backtest-2020-08-31.png)
 
-### 3. Detect anomalies
+### 3. Find anomalies
 
-If the forecasts and their ranges can be trusted, an anomaly is simply **what the model
-was confident would not happen**. Replay the past one week at a time: forecast each
-week only from the hours before it, then flag the days when actual demand fell outside
-the model's 1%-99% range for at least 6 hours.
+The backtest shows that we can trust the forecasts and their ranges. Thus an anomaly is
+a value that the model did not expect. The procedure is:
+
+1. Divide the past into weeks.
+2. For each week, make a forecast from the hours before that week only.
+3. Find the days when the actual demand was outside the 1%-99% range for 6 hours or
+   more. These days are anomalies.
 
 ```mermaid
 flowchart LR
-    H["History up to<br/>Sunday midnight"] --> T["Timestral"]
+    H["History until<br/>Sunday midnight"] --> T["Timestral"]
     T --> R["Expected range<br/>for each hour of the week"]
-    A["What actually<br/>happened"] --> C{"Outside the range<br/>for 6+ hours?"}
+    A["Actual demand"] --> C{"Outside the range<br/>for 6 hours or more?"}
     R --> C
-    C -- "yes" --> X["Anomalous day"]
-    C -- "no" --> N["Normal day"]
+    C -- "yes" --> X["Anomaly"]
+    C -- "no" --> N["Usual day"]
 ```
 
 ![anomalies](output/anomalies-168h.png)
 
-With no rules and no tuning per country, it flags the first lockdown week in Italy,
-France, Spain and Great Britain, France's reopening in May as a spike, and the days the
-holiday calendar doesn't cover, such as Christmas week and Italy's August shutdown.
-Before the pandemic, ~1% of hours fell above and ~1% below the range, as they should:
-it doesn't cry wolf.
+There are no rules and no adjustments for each country. The model found these
+anomalies:
 
-## A new frontier in software observability
+- The first week of the lockdown in Italy, France, Spain and Great Britain.
+- The reopening of France in May 2020, as an increase.
+- Days that are not in the holiday calendar, for example the week of Christmas and the
+  August closures in Italy.
 
-Software systems are full of time series with exactly this shape: daily and weekly
-cycles, holidays, slow growth, sudden shifts. Most alerting still relies on the fixed
-thresholds and moving averages shown above. A TSFM could:
+Before the pandemic, approximately 1% of the hours were above the range, and 1% were
+below it. This is the correct quantity. Thus the model does not send too many false
+alerts.
 
-- **Replace static alert thresholds** on request rates, latency, error rates, queue
-  depth, CPU and memory with "outside the expected range for this hour", so Monday
-  morning peaks and Sunday night lulls stop paging anyone.
-- **Watch business metrics** (sign-ups, checkouts, payments, log-ins) where a quiet
-  drop, such as a broken checkout button, matters more than a spike.
-- **Scale to thousands of metrics** with no per-metric setup: every series goes into
-  the same batch, like the five countries here.
-- **Catch slow drifts** (a memory leak, a growing backlog, a gradual slowdown after a
-  deploy) by forecasting a week ahead instead of a day, as the lockdowns showed.
-- **Plan capacity and cost**: forecast traffic, storage or cloud spend weeks ahead,
-  with a range rather than one number.
-- **Check releases**: compare a metric after a deploy with what the model expected
-  from before it.
-- **Use known events as inputs**: launches, sales or maintenance windows, passed in
-  advance like the public holidays here.
+## Possible uses in software observability
 
-What it won't do: tell you *why* something happened, or know about anything you don't
-pass in.
+Software systems have many time series with the same properties: daily and weekly
+cycles, holidays, slow growth and sudden changes. Most alerts use fixed thresholds or
+moving averages, as in the chart above. A TSFM can help in these tasks:
+
+- **Alerts without fixed thresholds.** Monitor request rates, latency, error rates,
+  queue length, CPU and memory. Send an alert when a value is outside the expected
+  range for that hour. Then the usual Monday peak and Sunday low do not cause alerts.
+- **Business metrics.** Monitor sign-ups, purchases, payments and log-ins. A small
+  decrease (for example, a defective checkout button) can be more important than an
+  increase.
+- **Many metrics.** Monitor thousands of metrics without a configuration for each
+  metric. All the time series go into one batch, as the five countries do here.
+- **Slow changes.** Find a memory leak, a queue that increases or a slow decrease in
+  performance after a release. Use a forecast for one week, not one day, as with the
+  lockdowns.
+- **Capacity and cost.** Forecast traffic, storage or cloud cost for the next weeks,
+  with a range and not only one value.
+- **Releases.** After a release, compare a metric with the value that the model
+  expected from the data before the release.
+- **Known events.** Give the model the dates of launches, sales or maintenance before
+  they occur, as with the public holidays here.
+
+A TSFM does not tell you why a change occurred. It does not know about events that you
+do not give to it.
 
 ## Quick start
 
 ```sh
-uv sync                     # installs timestral from GitHub, plus pandas, matplotlib, holidays
+uv sync                     # installs timestral from GitHub, and pandas, matplotlib, holidays
 uv run main.py signal       # the chart above: fixed threshold and moving average (no model)
 uv run main.py forecast
 uv run main.py backtest
@@ -204,17 +237,5 @@ uv run main.py anomalies
 ```
 
 The first run downloads the data (124 MB, into `data/`) and the model (837 MB, into the
-Hugging Face cache). Every command prints a summary and writes a CSV or a chart to
+Hugging Face cache). Each command shows a summary and writes a CSV file or a chart to
 `output/`.
-
-## More
-
-- [05-walkthrough.md](docs/05-walkthrough.md): the full details: the data, every
-  command and option, all the results and the limitations.
-- [01-concepts.md](docs/01-concepts.md): the statistical ideas (quantile, covariate,
-  backtesting...) explained without assuming any statistics background.
-- [02-capabilities.md](docs/02-capabilities.md): what Timestral can and can't do.
-- [03-python-library.md](docs/03-python-library.md): the `timestral` Python API and
-  every setting.
-- [04-anomaly-detection.md](docs/04-anomaly-detection.md): how forecast-based anomaly
-  detection works and how to tune it.
