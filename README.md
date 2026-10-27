@@ -107,11 +107,15 @@ the history.
 We ran all the commands on a MacBook Air (M1, 2020) with 16 GB of RAM. The model ran on
 the CPU, without a GPU.
 
-| Command | Function | Time |
-|---|---|---|
-| `main.py forecast` | Forecasts the next 30 days for 5 countries | 42 s |
-| `main.py backtest` | Makes 30 day-ahead forecasts for 5 countries | 54 s |
-| `main.py anomalies` | Makes one year of week-ahead forecasts for 5 countries | 96 s |
+Each command first reads the data file (124 MB, 50,400 rows). Then it gives a part of the
+history to the model. In this table, one value is the load of one country for one hour. The model also
+gets one holiday value (0 or 1) for each of these hours.
+
+| Command | Function | Input to the model | Output of the model | Time |
+|---|---|---|---|---|
+| `main.py forecast` | Forecasts the next 30 days for 5 countries | 5 forecasts, each from 32,768 hours: 163,840 values | 3,600 hours (720 × 5) | 42 s |
+| `main.py backtest` | Makes 30 day-ahead forecasts for 5 countries | 150 forecasts, each from 2,048 hours: 307,200 values | 3,600 hours (720 × 5) | 54 s |
+| `main.py anomalies` | Makes one year of week-ahead forecasts for 5 countries | 260 forecasts, each from 2,048 hours: 532,480 values | 43,680 hours (8,736 × 5) | 96 s |
 
 ## The functions of a TSFM
 
