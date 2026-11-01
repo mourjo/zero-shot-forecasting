@@ -227,7 +227,7 @@ table names the better model for each score.
 | forecasting | Error of the median (MAPE) % | 4.24 | 4.38 | **4.19** | 6.02 | 17.75 | 5.47 | TimesFM 3 |
 | forecasting | Hours in the 80% range, best: 80 | **81.1** | 77.1 | 76.7 | 83.1 | 78.2 | 89.8 | Timestral |
 | forecasting | Is the WQL winner clearly better than the second? | | | | | | | **no** (p = 0.91) |
-| cost | Seconds for the 260 forecasts on a CPU | 167 | 40 | 50 | **4** | 113 | 37 | Seasonal naive |
+| cost | Seconds for the 260 forecasts on a CPU | 95 | 26 | 41 | **4** | 87 | 32 | Seasonal naive |
 | anomalies | **Hours outside 1%-99% before the pandemic %**, main score, best: 2 | **1.8** | 3.1 | not possible | 5.9 | 5.1 | 3.8 | Timestral |
 | anomalies | Anomalous days before the pandemic, fewer is better | **20** | 35 | not possible | 62 | 72 | 38 | Timestral |
 | anomalies | Lockdown days found in the first 14 days, more is better | 6 | 5 | not possible | 6 | 1 | **7** | MSTL |
