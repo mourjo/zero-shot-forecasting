@@ -17,6 +17,8 @@ name of the model as a suffix, for example `output/forecast-timesfm-3.png`.
 
 - [The models](#the-models)
 - [How we compare the models](#how-we-compare-the-models)
+- [The scores, explained](#the-scores-explained): quantiles, MAPE, baseline, pinball loss,
+  WQL, coverage, width, tail calibration
 - [Summary: which model is better](#summary-which-model-is-better)
 - [1. Forecasting](#1-forecasting)
 - [2. Anomaly detection](#2-anomaly-detection)
@@ -100,6 +102,8 @@ We use four scores. The first is the main score.
 | **Hours in the 80% range** | If the range is honest: about 80% of hours must be between the 10% and the 90% quantile | nearest to 80% |
 | **Width of the 80% range** | How precise the range is, as % of the demand | lower, but only if the 80% is correct |
 
+Each score is explained, with examples, in [The scores, explained](#the-scores-explained).
+
 **Why WQL is the main score.** These models do not give one number. They give a range
 of possible values (the quantiles). MAPE scores only the median, and ignores the range.
 WQL scores each quantile with the *pinball loss*:
@@ -134,6 +138,8 @@ only when, something unusual happens? We use four scores:
 | **Lockdown days found** | Anomalous days in the first 14 days of each of the five lockdowns | higher |
 | **Lockdowns found** | Countries where the model found at least one lockdown day, of 5 | higher |
 
+For tail calibration, see [The scores, explained](#tail-calibration-the-score-for-anomaly-detection).
+
 **Why tail calibration is the main score.** The anomaly rule is "6 or more hours outside
 the 1%-99% range". A model with a 1%-99% range that is too narrow sends more alerts on
 usual days. A model with a range that is too wide misses real events. Thus the position
@@ -150,6 +156,180 @@ The summary table has one row for each score and one column for each model. For 
 row, the "better" column names the model with the best value, by the rule of that row
 (lowest, highest or nearest to the target). The winner of each section is the winner of
 its main score. The other rows explain why.
+
+## The scores, explained
+
+This section explains each score with small examples. The numbers in the examples are
+round numbers, not data from the project. For the basic terms (quantile, interval,
+median), see also [01-concepts.md](01-concepts.md).
+
+### Quantiles: what the models give
+
+A model does not give one number for each hour. It gives a set of **quantiles**. The
+*q* quantile is the value that the model expects the demand to stay below with
+probability *q*. For example, for one hour:
+
+| Quantile | Value | Meaning |
+|---|---|---|
+| 10% | 47,000 MW | 1 chance in 10 that the demand is lower than this |
+| 50% (median) | 51,000 MW | the best single estimate: equal chances above and below |
+| 90% | 53,000 MW | 9 chances in 10 that the demand is lower than this |
+
+Two quantiles make a **range** (an *interval*). The range from 10% to 90% is the **80%
+range**: the demand must be in it on 8 hours of 10. The range from 1% to 99% is the
+**98% range**: the demand must be outside it on only 2 hours of 100. The anomaly check
+uses this range.
+
+All the scores below compare these quantiles with the **actual** demand of the same hour.
+
+### MAPE: how far the median is from the actual value
+
+**MAPE** (mean absolute percentage error) uses only the median. For each hour, calculate
+the difference between the median and the actual value, as a percentage of the actual
+value. Ignore the sign: too high and too low count the same. Then calculate the mean
+over all hours.
+
+| Hour | Median forecast | Actual | Difference | As % of the actual |
+|---|---|---|---|---|
+| 07:00 | 51,000 MW | 50,000 MW | 1,000 MW | 2.0% |
+| 08:00 | 38,000 MW | 40,000 MW | 2,000 MW | 5.0% |
+| 09:00 | 60,000 MW | 60,000 MW | 0 MW | 0.0% |
+| | | | **MAPE** | **(2.0 + 5.0 + 0.0) / 3 = 2.3%** |
+
+- **Lower is better.** A MAPE of 4% means that the median is, on average, 4% away from
+  the actual demand.
+- **Percentages make countries comparable.** An error of 1,000 MW is small in Germany
+  (about 60,000 MW) and large in Spain (about 28,000 MW).
+- **The limit of MAPE:** it does not look at the range. Two models with the same median
+  get the same MAPE, also if one has a correct range and the other has a range that is
+  much too narrow. Thus MAPE alone cannot compare these models.
+
+### The baseline: is the model useful?
+
+A MAPE of 4% has no meaning alone: is that good or bad for this data? Thus we compare it
+with a **baseline**, a simple method that any useful model must beat. Our baseline is
+**"same hour last week"**: the forecast for Tuesday 10:00 is the actual demand of the
+Tuesday before at 10:00. This method already knows the daily and the weekly cycle. It
+has a MAPE of 6.0% on our data. All three models have 4.2-4.4%, so all three are useful.
+
+### Pinball loss: the score for one quantile
+
+To score a quantile, we use the **pinball loss** (also called the *quantile loss*). For
+the *q* quantile with value *f*, and the actual value *y*:
+
+- if the actual value is **above** the quantile (*y* > *f*): loss = *q* × (*y* − *f*)
+- if the actual value is **below** the quantile (*y* < *f*): loss = (1 − *q*) × (*f* − *y*)
+
+The two cases have different weights. This is how the loss knows what a quantile
+promised. Example: the actual demand is 50,000 MW.
+
+| Quantile | Value | Actual is | Loss | Why |
+|---|---|---|---|---|
+| 90% | 53,000 MW | below, by 3,000 | (1 − 0.9) × 3,000 = **300** | small: a 90% quantile must be above the actual value on most hours |
+| 90% | 48,000 MW | above, by 2,000 | 0.9 × 2,000 = **1,800** | large: the model said "90% sure that the demand stays below 48,000", and it was wrong |
+| 50% | 51,000 MW | below, by 1,000 | 0.5 × 1,000 = **500** | the two sides have the same weight for the median |
+
+Thus a 90% quantile that is 2,000 MW too low costs 6 times more than one that is 3,000
+MW too high. The best position for each quantile, over many hours, is exactly the
+position where it is correct: for the 90% quantile, where 90% of actual values are below
+it. A model gets the lowest loss only when it puts each quantile at its true position.
+
+For the median, the pinball loss is half of the absolute error (0.5 × 1,000 = 500 for a
+difference of 1,000 MW).
+
+### WQL: the score for the whole forecast
+
+**WQL** (weighted quantile loss) adds the pinball loss of several quantiles. Then it
+divides by the actual demand, so that the result is a percentage, as MAPE is:
+
+```
+WQL = 2 × (sum of the pinball losses of all quantiles, over all hours)
+      ─────────────────────────────────────────────────────────────────
+          (number of quantiles) × (sum of the actual values)
+```
+
+This project uses the 9 deciles (10%, 20%, ..., 90%), because all three models give
+them. The factor 2 changes the half in the pinball loss back to a full error. Thus, for
+the median alone, WQL is the same as the absolute error in %: a difference of 1,000 MW at
+50,000 MW gives a WQL of 2 × 500 / 50,000 = 2%, and a MAPE of 2%. With all the quantiles,
+WQL is the percentage error of the whole forecast, not only of the median.
+
+Example: one hour, actual demand 52,500 MW, three models with the same median (51,000 MW)
+but different ranges. To keep it short, we use only the 10%, 50% and 90% quantiles.
+
+| | 10% | 50% | 90% | Loss 10% | Loss 50% | Loss 90% | Total | WQL |
+|---|---|---|---|---|---|---|---|---|
+| A: correct range | 47,000 | 51,000 | 53,000 | 0.1 × 5,500 = 550 | 0.5 × 1,500 = 750 | 0.1 × 500 = 50 | 1,350 | **1.71%** |
+| B: range too narrow | 49,500 | 51,000 | 52,000 | 0.1 × 3,000 = 300 | 750 | 0.9 × 500 = 450 | 1,500 | 1.90% |
+| C: range too wide | 40,000 | 51,000 | 60,000 | 0.1 × 12,500 = 1,250 | 750 | 0.1 × 7,500 = 750 | 2,750 | 3.49% |
+
+(WQL = 2 × total / (3 × 52,500).)
+
+- All three models have the same median, so they have **the same MAPE** (2.9%). MAPE
+  cannot see the difference.
+- **B is punished** because the actual value is above its 90% quantile: its range was too
+  narrow.
+- **C is punished** because its 10% and 90% quantiles are far from the actual value: its
+  range is so wide that it says almost nothing.
+- **A has the best WQL**: its range was wide enough, but not wider.
+
+On hours when the actual value is near the median, the narrow range of B has a lower loss
+than A. Over thousands of hours, these hours and the hours outside the range balance.
+The model with the lowest total is the model whose quantiles are nearest to their true
+positions. Thus WQL rewards a forecast that is both **accurate** (good median) and
+**honest** (correct range), and this is why it is the main forecasting score.
+
+WQL is the standard score of the public benchmarks for these models (for example
+GIFT-Eval and fev-bench). It is an approximation of the CRPS (continuous ranked
+probability score), which is the same idea with all quantiles, not only 9.
+
+### Hours in the 80% range: is the range honest?
+
+Count the hours when the actual value is between the 10% and the 90% quantile, as a
+percentage of all hours. This is the **coverage** of the 80% range.
+
+| Coverage | Meaning |
+|---|---|
+| about 80% | **calibrated**: the range means what it says |
+| much less than 80%, for example 72% | **overconfident**: the range is too narrow, and the model is surprised too often |
+| much more than 80%, for example 90% | **underconfident**: the range is too wide. It is safe, but it gives less information |
+
+Example: over 1,000 hours, the actual value was in the 80% range on 767 hours. The
+coverage is 76.7% (TimesFM 3 on our data): a little too narrow.
+
+### Width of the 80% range: how precise is the range?
+
+For each hour, the width is the 90% quantile minus the 10% quantile, as a percentage of
+the actual value. Then calculate the mean. Example: 10% = 47,000 MW, 90% = 53,000 MW,
+actual 50,000 MW: the width is 6,000 / 50,000 = 12%.
+
+A narrow range is more useful, **but only if its coverage is correct**. It is easy to
+make a narrow range: it is difficult to make a narrow range that is also correct. Thus
+always read the width together with the coverage. TimesFM 3 has the narrowest range
+(12.3%), but its coverage (76.7%) shows that part of this precision is not real.
+
+### Tail calibration: the score for anomaly detection
+
+The anomaly check uses the 1% and 99% quantiles (the **tails** of the forecast). On usual
+days, the actual value must be below the 1% line on 1% of the hours and above the 99%
+line on 1% of the hours: **2% in total**. We count these hours before the pandemic, when
+the days are usual.
+
+| Hours outside 1%-99% | Meaning | Effect on the alerts |
+|---|---|---|
+| about 2% | the lines are in the correct position | the alerts are reliable |
+| more than 2%, for example 3.1% (Chronos-2) | the range is too narrow | more false alerts on usual days |
+| less than 2%, for example 0.5% | the range is too wide | real events can stay inside the range, and the check misses them |
+
+Why this matters: the rule is "a day is anomalous when 6 or more of its hours are outside
+the range". With correct lines, 6 such hours in one day are improbable on a usual day. If
+the lines are too narrow, usual days get 6 hours outside more often, and they become
+false alerts. Thus the position of the tails decides the quality of the alerts, and this
+is the main anomaly score.
+
+WQL does not measure this. It uses only the deciles (10% to 90%), so a model can have a
+good WQL and bad tails. This is why Chronos-2 is close to the other models in
+forecasting, but worse in anomaly detection.
 
 ## Summary: which model is better
 
