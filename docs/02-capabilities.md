@@ -258,7 +258,7 @@ flowchart TD
     B -- "no" --> C["Try 123M<br/>within 0.2% of 209M's score"]
     C --> D{"Fast enough?"}
     D -- "yes" --> K2["Keep 123M"]
-    D -- "no" --> E["Try 28M or 5M<br/>and backtest to check accuracy holds"]
+    D -- "no" --> E["Try 28M or 5M<br/>and run `main.py compare` to check that accuracy holds"]
 ```
 
 ## 9. Runs anywhere, offline included
@@ -298,8 +298,9 @@ flowchart LR
   off" detector at the start of a larger workflow.
 - **Capacity and inventory planning.** Use an upper quantile ("enough for 95% of
   days") instead of the median.
-- **Backtesting and model comparison.** Hide a period, forecast it and score it
-  (`main.py backtest`). The quantiles let you check calibration, not only error.
+- **Backtesting and model comparison.** Forecast past periods from the data before
+  them only, and score the forecasts (`main.py compare`). The quantiles let you check
+  calibration, not only error.
 - **Scenario analysis.** Change a known-future covariate (a planned promotion, a
   shutdown) and compare the forecasts.
 - **Drift detection.** Track how often real values fall outside the forecast intervals
@@ -337,10 +338,9 @@ Mistral reports, for **Timestral-209M**:
 These are Mistral's launch figures; they say a technical report with full results
 will follow.
 
-On this project's data (September 2020, five countries), Timestral-209M's day-ahead
-forecasts were off by 1.5% (Germany) to 4.8% (Great Britain) on average. That beats
-the grid operators' own published forecasts in Germany and Great Britain, and loses
-to them in France, Italy and Spain, where the operators' weather-driven models are
-very accurate (0.9% in Spain). It beat a "same hour last week" baseline everywhere.
-See the [README](../README.md)
-for the full numbers.
+On this project's data (week-ahead forecasts for five countries, October 2019 to
+February 2020), Timestral-209M's median was off by 3.2% (Spain) to 5.6% (Great Britain)
+on average, against 5.0-7.2% for a "same hour last week" baseline. 81% of the hours were
+in its 80% range. Compared with Chronos-2 and TimesFM 3 on the same forecasts, it is
+about equal at forecasting and the best at anomaly detection. See
+[06-comparing-models.md](06-comparing-models.md) for the full numbers.

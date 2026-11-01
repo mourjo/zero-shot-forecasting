@@ -1,7 +1,7 @@
 [project]
 name = "zero-shot-forecasting"
 version = "0.1.0"
-description = "Exploring time series foundation models (TSFMs): zero-shot forecasting, backtesting and anomaly detection on European electricity demand with Timestral and Chronos-2"
+description = "Exploring time series foundation models (TSFMs): zero-shot forecasting, model comparison and anomaly detection on European electricity demand with Timestral, Chronos-2 and TimesFM 3"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -9,6 +9,7 @@ dependencies = [
     "holidays>=0.107",
     "matplotlib>=3.11.2",
     "pandas>=3.1.0",
+    "timesfm[torch]>=3.0.2",
     "timestral",
 ]
 

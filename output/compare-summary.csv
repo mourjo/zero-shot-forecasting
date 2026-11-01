@@ -1,0 +1,10 @@
+section,criterion,Timestral,Chronos-2,TimesFM 3,last week (baseline),better
+forecasting,"WQL % (main score, lower is better)",3.21,3.33,3.18,,TimesFM 3
+forecasting,MAPE % of the median (lower is better),4.24,4.38,4.19,6.02,TimesFM 3
+forecasting,hours in the 80% range (best: 80),81.1,77.1,76.7,,Timestral
+forecasting,width of the 80% range % (lower is better),13.95,13.07,12.29,,TimesFM 3
+cost,seconds for all week-ahead forecasts (CPU),100,26,44,,Chronos-2
+anomalies,"hours outside 1%-99% before the pandemic % (main score, best: 2)",1.8,3.1,not possible,,Timestral
+anomalies,anomalous days before the pandemic (fewer = fewer false alerts),20,35,not possible,,Timestral
+anomalies,"lockdown days found, first 14 days (more is better)",6,5,not possible,,Timestral
+anomalies,"lockdowns found, of 5 countries (more is better)",4,3,not possible,,Timestral

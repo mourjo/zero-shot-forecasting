@@ -13,8 +13,15 @@ from forecasting import QuantileForecast
 
 ACTUAL = "#2a78d6"
 FORECAST = "#eb6834"
-OPERATOR = "#1baf7a"
-SECOND = "#6250d6"  # the second model in a comparison
+# One fixed colour per model, so that a model has the same colour in every chart.
+MODEL_COLORS = {"Timestral": "#eb6834", "Chronos-2": "#6250d6", "TimesFM 3": "#1baf7a"}
+SPARE_COLORS = ["#eda100", "#e87ba4"]
+
+
+def model_color(label: str) -> str:
+    if label not in MODEL_COLORS:
+        MODEL_COLORS[label] = SPARE_COLORS[len(MODEL_COLORS) - 3]
+    return MODEL_COLORS[label]
 ANOMALY = "#e34948"
 INK = "#52514e"
 GRID = "#e4e3df"
@@ -84,36 +91,24 @@ def plot_signal(load: pd.Series, threshold: float, average: pd.Series, spread: p
     plt.close(fig)
 
 
-def plot_forecast(history: pd.DataFrame, fc: QuantileForecast, path: Path, show_days: int = 28):
+def plot_forecast(history: pd.DataFrame, fc: QuantileForecast, path: Path, label: str = "Timestral",
+                  show_days: int = 28):
     recent = history.iloc[-show_days * 24:]
     fig, axes = _panels(list(history.columns),
-                        f"Hourly load: last {show_days} days and next {len(fc.median) // 24} days", "MW")
+                        f"Hourly load: last {show_days} days and the next {len(fc.median) // 24} days by {label}", "MW")
     for ax, code in zip(axes, history.columns):
         ax.plot(recent.index, recent[code], color=ACTUAL, linewidth=0.8, label="actual")
-        _band(ax, fc, code, "forecast")
-    _save(fig, axes, path)
-
-
-def plot_backtest(seen: pd.DataFrame, hidden: pd.DataFrame, day: QuantileForecast, operator: pd.DataFrame,
-                  path: Path, label: str = "Timestral", show_days: int = 7):
-    context = seen.iloc[-show_days * 24:]
-    fig, axes = _panels(list(seen.columns),
-                        f"Backtest: day-ahead forecasts from {hidden.index[0]:%Y-%m-%d} vs what happened", "MW")
-    for ax, code in zip(axes, seen.columns):
-        ax.plot(context.index, context[code], color=ACTUAL, linewidth=0.8, label="before the backtest")
-        ax.plot(hidden.index, hidden[code], color=ACTUAL, linewidth=0.8, linestyle=(0, (2, 2)), label="actual")
-        ax.axvline(hidden.index[0], color=INK, linewidth=0.8)
-        _band(ax, day, code, f"{label} day-ahead")
-        ax.plot(operator.index, operator[code], color=OPERATOR, linewidth=0.8, label="grid operator day-ahead")
+        _band(ax, fc, code, label, model_color(label))
     _save(fig, axes, path)
 
 
 def plot_anomalies(actual: pd.DataFrame, expected: pd.DataFrame, days: pd.DataFrame, lockdowns: dict[str, str],
-                   horizon: int, path: Path):
+                   horizon: int, path: Path, label: str = "Timestral"):
     ahead = {24: "day-ahead", 168: "week-ahead"}.get(horizon, f"{horizon}-hours-ahead")
-    fig, axes = _panels(list(actual.columns), f"Daily energy vs the {ahead} forecast; red = anomalous day", "MWh")
+    fig, axes = _panels(list(actual.columns), f"Daily energy vs the {ahead} forecast by {label}; red = anomalous day",
+                        "MWh")
     for ax, code in zip(axes, actual.columns):
-        ax.plot(expected.index, expected[code], color=FORECAST, linewidth=1.2, label="expected (forecast)")
+        ax.plot(expected.index, expected[code], color=model_color(label), linewidth=1.2, label="expected (forecast)")
         ax.plot(actual.index, actual[code], color=ACTUAL, linewidth=1, label="actual")
         hits = days[days["country"] == code]
         ax.scatter(hits["day"], hits["actual MWh"], s=24, color=ANOMALY, edgecolor="white", linewidth=1, zorder=3,
@@ -124,27 +119,13 @@ def plot_anomalies(actual: pd.DataFrame, expected: pd.DataFrame, days: pd.DataFr
     _save(fig, axes, path)
 
 
-def plot_compare_backtest(hidden: pd.DataFrame, forecasts: dict[str, QuantileForecast], path: Path, show_days: int = 7):
-    """The first `show_days` of the backtest: the actual load and each model's median and interval."""
-    hours = hidden.index[:show_days * 24]
-    fig, axes = _panels(list(hidden.columns),
-                        f"Day-ahead forecasts from {hours[0]:%Y-%m-%d}: the two models against what happened", "MW")
-    colors = [FORECAST, SECOND]
-    for ax, code in zip(axes, hidden.columns):
-        ax.plot(hours, hidden.loc[hours, code], color=ACTUAL, linewidth=1, label="actual")
-        for (label, fc), color in zip(forecasts.items(), colors):
-            part = QuantileForecast(fc.low.loc[hours], fc.median.loc[hours], fc.high.loc[hours], fc.mean.loc[hours],
-                                    fc.low_level, fc.high_level)
-            _band(ax, part, code, label, color)
-    _save(fig, axes, path)
-
-
 def plot_compare_anomalies(flags: pd.DataFrame, lockdowns: dict[str, str], path: Path):
     """One panel per country: a row of marks for each model, one mark for each anomalous day."""
     codes = list(flags["country"].unique())
     models = [c for c in flags.columns if c not in ("day", "country")]
-    colors = [FORECAST, SECOND]
-    fig, axes = plt.subplots(len(codes), 1, figsize=(11, 1.15 * len(codes) + 0.8), sharex=True, squeeze=False)
+    colors = [model_color(m) for m in models]
+    fig, axes = plt.subplots(len(codes), 1, figsize=(11, (0.45 + 0.35 * len(models)) * len(codes) + 0.8), sharex=True,
+                             squeeze=False)
     fig.suptitle("Anomalous days (6+ hours outside the 1%-99% week-ahead range), by model", x=0.01, ha="left",
                  fontsize=13, color="#0b0b0b")
     for ax, code in zip(axes[:, 0], codes):
@@ -163,7 +144,33 @@ def plot_compare_anomalies(flags: pd.DataFrame, lockdowns: dict[str, str], path:
             ax.spines[side].set_visible(False)
         ax.spines["bottom"].set_color(GRID)
         ax.tick_params(colors=INK, labelsize=8, length=0)
-        ax.legend(loc="upper left", frameon=False, fontsize=8, ncols=2, bbox_to_anchor=(0.55, 1.45))
+        ax.legend(loc="lower right", frameon=False, fontsize=8, ncols=len(models), bbox_to_anchor=(1, 1))
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     plt.close(fig)
+
+
+def plot_compare_forecast(history: pd.DataFrame, forecasts: dict[str, QuantileForecast], path: Path,
+                          show_days: int = 14):
+    """The last `show_days` of actual load, then each model's median forecast for the days after the data."""
+    recent = history.iloc[-show_days * 24:]
+    days = len(next(iter(forecasts.values())).median) // 24
+    fig, axes = _panels(list(history.columns), f"The next {days} days: the median forecast of each model", "MW")
+    for ax, code in zip(axes, history.columns):
+        ax.plot(recent.index, recent[code], color=ACTUAL, linewidth=0.8, label="actual")
+        for label, fc in forecasts.items():
+            ax.plot(fc.median.index, fc.median[code], color=model_color(label), linewidth=1, label=label)
+    _save(fig, axes, path)
+
+
+def plot_compare_week(load: pd.DataFrame, forecasts: dict[str, QuantileForecast], start: str, path: Path):
+    """One usual week: the actual load and each model's week-ahead median, made before the week started."""
+    first = pd.Timestamp(start, tz="UTC")
+    hours = pd.date_range(first, periods=7 * 24, freq="h")
+    fig, axes = _panels(list(load.columns),
+                        f"Week-ahead forecasts for the week from {first:%Y-%m-%d}, made before it started", "MW")
+    for ax, code in zip(axes, load.columns):
+        ax.plot(hours, load.loc[hours, code], color=ACTUAL, linewidth=1.6, label="actual")
+        for label, fc in forecasts.items():
+            ax.plot(hours, fc.median.loc[hours, code], color=model_color(label), linewidth=1, label=f"{label} median")
+    _save(fig, axes, path)

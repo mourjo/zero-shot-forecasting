@@ -1320,6 +1320,25 @@ wheels = [
 ]
 
 [[package]]
+name = "timesfm"
+version = "3.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "safetensors" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/75/c5/1138508a4bd74f2c7ea91b2ca95b126cda8e40cadf8a2dadc9e0d812297f/timesfm-3.0.2.tar.gz", hash = "sha256:a602deba10b9323132d0bc694c08e6cfaf144d7b9e4554da33155b6a9cb0ea5c", size = 100423, upload-time = "2026-09-09T22:07:06.923Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d9/08/06f17372e1843e203d579241ce199594a22d5c705a3315623697f50697f6/timesfm-3.0.2-py3-none-any.whl", hash = "sha256:cfa3d22ddc3f019f0d9d95f19055428c4a4713526dafd7e5d1a7769782e7613f", size = 125052, upload-time = "2026-09-09T22:07:05.683Z" },
+]
+
+[package.optional-dependencies]
+torch = [
+    { name = "torch" },
+]
+
+[[package]]
 name = "timestral"
 version = "1.0.0"
 source = { git = "https://github.com/mistralai/timestral.git#a534bdbd244d64f3d9d743f46c7bf6fc330ed4ff" }
@@ -1495,6 +1514,7 @@ dependencies = [
     { name = "holidays" },
     { name = "matplotlib" },
     { name = "pandas" },
+    { name = "timesfm", extra = ["torch"] },
     { name = "timestral" },
 ]
 
@@ -1504,5 +1524,6 @@ requires-dist = [
     { name = "holidays", specifier = ">=0.107" },
     { name = "matplotlib", specifier = ">=3.11.2" },
     { name = "pandas", specifier = ">=3.1.0" },
+    { name = "timesfm", extras = ["torch"], specifier = ">=3.0.2" },
     { name = "timestral", git = "https://github.com/mistralai/timestral.git" },
 ]

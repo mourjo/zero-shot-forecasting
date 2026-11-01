@@ -114,12 +114,12 @@ gets one holiday value (0 or 1) for each of these hours.
 | Command | Function | Input to the model | Output of the model | Time |
 |---|---|---|---|---|
 | `main.py forecast` | Forecasts the next 30 days for 5 countries | 5 forecasts, each from 32,768 hours: 163,840 values | 3,600 hours (720 × 5) | 42 s |
-| `main.py backtest` | Makes 30 day-ahead forecasts for 5 countries | 150 forecasts, each from 2,048 hours: 307,200 values | 3,600 hours (720 × 5) | 54 s |
 | `main.py anomalies` | Makes one year of week-ahead forecasts for 5 countries | 260 forecasts, each from 2,048 hours: 532,480 values | 43,680 hours (8,736 × 5) | 96 s |
+| `main.py compare` | Does `forecast` and `anomalies` with each of the 3 models | 3 × the two rows above | 3 × the two rows above | about 5 min |
 
 ## The functions of a TSFM
 
-This project uses the same model in three different ways.
+This project uses the same model in three different ways. Then it compares three models.
 
 ### 1. Forecast
 
@@ -138,53 +138,33 @@ The forecast continues the daily and weekly pattern. The range becomes wider for
 that are farther in the future. In Germany, the first weekend is lower than the other
 weekends, because Saturday 3 October is a public holiday.
 
-### 2. Backtest: examine the quality of the forecasts
+### 2. Score the forecasts
 
-We cannot examine a forecast for the future yet. Thus we use a month in the past. The
-model forecasts this month without the data for it. Then we compare the forecast with
-the actual demand.
-
-For each day of September 2020, the model makes a forecast at 08:00 on the day before.
-It uses only the 12 weeks of data until that time. The grid operators must publish
-their forecasts at the same time. This is the forecast for Thursday 10 September:
+We cannot examine a forecast for the future yet. Thus we forecast the past, and compare
+the forecasts with the actual demand. Each forecast may use only the data from before the
+period that it forecasts:
 
 ```
-                     Wednesday 9 September                 Thursday 10 September
-          00:00             08:00               24:00                            24:00
-   ─────────┼─────────────────┼───────────────────┼────────────────────────────────┼──
-   ██████████████████████████ │░░░░░░░░░░░░░░░░░░░│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│
-   history: the model sees    │ forecast, but not │ forecast, compared with the
-   the 12 weeks until 08:00   │ compared          │ actual demand
-                              ▲
-                              the model makes the forecast here
+            week 1           week 2           week 3          ...
+history ███████████│░░░░░░░│
+history ██████████████████│░░░░░░░│
+history █████████████████████████│░░░░░░░│
+        ███ = what the model sees (the 12 weeks before)   ░░░ = what it forecasts, then we compare
 ```
 
-Then the model does the same for each of the other days:
+For each week from 30 September 2019, the model forecasts the 7 days from the 12 weeks
+before them. The model never sees the week that we compare. We score the weeks before
+the pandemic (to 29 February 2020), because no model can forecast a lockdown.
 
-| Forecast made at | Data that the model sees | Day that we compare with the actual demand |
-|---|---|---|
-| Mon 31 Aug, 08:00 | 12 weeks until Mon 31 Aug, 08:00 | Tue 1 Sep |
-| Tue 1 Sep, 08:00 | 12 weeks until Tue 1 Sep, 08:00 | Wed 2 Sep |
-| Wed 2 Sep, 08:00 | 12 weeks until Wed 2 Sep, 08:00 | Thu 3 Sep |
-| ... | ... | ... |
-| Tue 29 Sep, 08:00 | 12 weeks until Tue 29 Sep, 08:00 | Wed 30 Sep |
+The results for Timestral:
 
-The model never sees the day that we compare. Each forecast uses the most recent demand,
-until 08:00 on the day before. Thus the model can follow changes quickly.
-
-The results for the 30 days:
-
-- In Germany, France, Italy and Spain, the average error was 1.5-2.2%. In Great
-  Britain, it was 4.8%.
-- In Germany and Great Britain, the error was smaller than the error of the grid
-  operators' forecasts. The grid operators use weather forecasts. Timestral does not.
-- 79-89% of the actual values were in the 80% range. Thus the ranges are correct.
-
-![backtest](output/backtest-2020-08-31.png)
+- The average error was 4.2% (3.2-5.6%, by country). The simple method "same hour last
+  week" had an average error of 6.0%.
+- 81% of the actual values were in the 80% range. Thus the ranges are correct.
 
 ### 3. Find anomalies
 
-The backtest shows that we can trust the forecasts and their ranges. Thus an anomaly is
+The scores show that we can trust the forecasts and their ranges. Thus an anomaly is
 a value that the model did not expect. The procedure is:
 
 1. Divide the past into weeks.
@@ -216,22 +196,36 @@ Before the pandemic, approximately 1% of the hours were above the range, and 1% 
 below it. This is the correct quantity. Thus the model does not send too many false
 alerts.
 
-### 4. Compare with a different model: Chronos-2
+### 4. Compare models
 
-`uv run main.py compare` does the backtest and the anomaly check again with
-[Chronos-2](https://huggingface.co/amazon/chronos-2) from Amazon, with the same data and
-the same procedure. The results:
+`uv run main.py compare` does steps 1-3 again with three open-weight TSFMs: Timestral
+(Mistral), [Chronos-2](https://huggingface.co/amazon/chronos-2) (Amazon) and
+[TimesFM 3](https://huggingface.co/google/timesfm-3.0-pytorch) (Google). Each model gets
+the same data, the same 260 week-ahead forecasts to make and the same scores. Then a
+summary table names the better model for each score.
 
-- **Forecasting:** the two models are almost equal. The average error was 2.44% with
-  Timestral and 2.52% with Chronos-2, and the 80% ranges of both models are correct.
-  Chronos-2 was approximately 3.7 times faster.
-- **Anomaly detection:** Timestral is better. The 1%-99% range of Chronos-2 is too
-  narrow: before the pandemic, 3.0% of the hours were outside it (the correct quantity is
-  2%). Thus Chronos-2 found 80 anomalous days and Timestral found 52. Chronos-2 found 45
-  of the 52 Timestral days. Some of its other days are real events, but some are
-  probably false alerts.
+| Section | Criterion | Timestral | Chronos-2 | TimesFM 3 | Better |
+|---|---|---|---|---|---|
+| forecasting | **Quantile loss (WQL) %**, main score, lower is better | 3.21 | 3.33 | **3.18** | TimesFM 3 |
+| forecasting | Error of the median (MAPE) %; "last week" gets 6.02 | 4.24 | 4.38 | **4.19** | TimesFM 3 |
+| forecasting | Hours in the 80% range, best: 80 | **81.1** | 77.1 | 76.7 | Timestral |
+| cost | Seconds for the 260 forecasts on a CPU | 100 | **26** | 44 | Chronos-2 |
+| anomalies | **Hours outside 1%-99% before the pandemic %**, main score, best: 2 | **1.8** | 3.1 | not possible | Timestral |
+| anomalies | Anomalous days before the pandemic, fewer is better | **20** | 35 | not possible | Timestral |
+| anomalies | Lockdown days found in the first 14 days, more is better | **6** | 5 | not possible | Timestral |
 
-For all the results, see [docs/06-timestral-vs-chronos-2.md](docs/06-timestral-vs-chronos-2.md).
+- **Forecasting:** the three models are almost equal. TimesFM 3 has the best score, but
+  the difference from Timestral is only 1%. All three are much better than "same hour
+  last week".
+- **Anomaly detection:** Timestral is better. Its 1%-99% range is the most correct, so
+  it sends the fewest false alerts. The range of Chronos-2 is too narrow, so Chronos-2
+  sends 75% more alerts on usual days. TimesFM 3 gives only the 10%-90% range, so it
+  cannot do this check.
+
+![compare-anomalies](output/compare-anomalies.png)
+
+For how we score the models, and for all the results, see
+[docs/06-comparing-models.md](docs/06-comparing-models.md).
 
 ## Possible uses in software observability
 
@@ -263,15 +257,14 @@ do not give to it.
 ## Quick start
 
 ```sh
-uv sync                     # installs timestral from GitHub, chronos-forecasting, pandas, matplotlib, holidays
+uv sync                     # installs timestral from GitHub, chronos-forecasting, timesfm, pandas, matplotlib, holidays
 uv run main.py signal       # the chart above: fixed threshold and moving average (no model)
 uv run main.py forecast
-uv run main.py backtest
 uv run main.py anomalies
-uv run main.py compare      # the backtest and the anomaly check with Timestral and Chronos-2
+uv run main.py compare      # steps 1-3 with Timestral, Chronos-2 and TimesFM 3, and the summary table
 ```
 
-Add `--model chronos-2` to a command to use Chronos-2 instead of Timestral.
+Add `--model chronos-2` or `--model timesfm-3` to a command to use a different model.
 
 The first run downloads the data (124 MB, into `data/`) and the model (837 MB, into the
 Hugging Face cache). Each command shows a summary and writes a CSV file or a chart to
