@@ -138,6 +138,15 @@ def write_anomalies(model: Model, load: pd.DataFrame, fc: QuantileForecast, args
     return days, daily, name
 
 
+def write_expected_only(model: Model, load: pd.DataFrame, fc: QuantileForecast, args: argparse.Namespace) -> str:
+    """The anomaly chart for a model without a 1% and 99% quantile: actual and expected energy, no dots."""
+    actual_day = load.loc[fc.median.index].resample("D").sum()
+    name = f"anomalies-{args.horizon}h{_suffix(model)}"
+    plot_anomalies(actual_day, fc.mean.resample("D").sum(), None, LOCKDOWNS, args.horizon, OUTPUT / f"{name}.png",
+                   label=model.label, note="no red dots: no 1% and 99% quantiles, so no anomaly check")
+    return name
+
+
 def can_find_anomalies(model: Model) -> bool:
     return model.has_levels(0.01, 0.99)
 
@@ -175,6 +184,8 @@ def run_compare(power, args: argparse.Namespace):
         result["weekly"] = weekly_wql(load, result["week"], NORMAL_UNTIL, args.horizon)
         if can_find_anomalies(model):
             result["days"], result["daily"], _ = write_anomalies(model, load, result["week"], args)
+        else:
+            write_expected_only(model, load, result["week"], args)
         results[model.label] = result
         del model  # free the memory before the next model loads
     labels = list(results)

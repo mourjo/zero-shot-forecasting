@@ -212,7 +212,7 @@ as if they were certain. Over 168 hours, the ETS range grows (see above), so the
 is wide.
 
 **Strengths:** it knows both cycles, it is robust to one unusual week (the cycles are
-smoothed over the 12 weeks), and it is fast (37 seconds for all 260 forecasts).
+smoothed over the 12 weeks), and it is fast (about 30 seconds for all 260 forecasts).
 
 **Weaknesses:** it assumes that the parts are **added** and that each cycle has a **fixed
 shape** in the near future. In reality the daily shape changes with the weekday and the
@@ -232,7 +232,7 @@ check over one year. All values from `main.py compare`:
 | Width of the 80% range % | 22.4 | 89.5 | 29.3 | 12.3 (TimesFM 3) |
 | Hours outside 1%-99% before the pandemic (target 2) | 5.9 | 5.1 | 3.8 | 1.8 (Timestral) |
 | Anomalous days before the pandemic | 62 | 72 | 38 | 20 (Timestral) |
-| Seconds for 260 forecasts (CPU) | 4 | 113 | 37 | 40-167 |
+| Seconds for 260 forecasts (CPU) | 4 | 87 | 32 | 26-95 |
 
 What the results show:
 
