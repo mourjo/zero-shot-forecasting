@@ -205,10 +205,18 @@ way:
   [Chronos-2](https://huggingface.co/amazon/chronos-2) (Amazon) and
   [TimesFM 3](https://huggingface.co/google/timesfm-3.0-pytorch) (Google). They are used
   zero-shot.
-- **Three classical baselines** from [statsforecast](https://github.com/Nixtla/statsforecast):
-  *seasonal naive* (copy last week), *ETS* (exponential smoothing) and
-  *MSTL* (remove the daily and weekly cycles, forecast the rest). They are fitted again on
-  each 12-week history. A TSFM is useful only if it is better than these simpler methods.
+- **Three classical baselines** from [statsforecast](https://github.com/Nixtla/statsforecast).
+  They are fitted again on each 12-week history. A TSFM is useful only if it is better than
+  these simpler methods.
+
+| Baseline | How it forecasts | Strength | Weakness |
+|---|---|---|---|
+| **Seasonal naive** | Each hour is the same as the same hour one week earlier | Fast; has the correct daily and weekly shape | Copies last week with its accidents (a holiday, a cold day) |
+| **ETS** (exponential smoothing) | A weighted average of the past, with more weight on recent hours; can add a trend and one cycle | The classical method for one cycle | Only one cycle: here it usually chose no cycle at all, so its forecast was a flat line |
+| **MSTL** | Removes the daily and the weekly cycle, forecasts the rest with ETS, adds the cycles back | Knows both cycles; robust to one unusual week | Assumes fixed cycle shapes that simply add up; very wide ranges |
+
+The baselines do not get the holiday indicator: they have no input for it. For how each
+method works, see [docs/08-classical-baselines.md](docs/08-classical-baselines.md).
 
 Each model gets the same data and the same 260 week-ahead forecasts to make. Then a summary
 table names the better model for each score.

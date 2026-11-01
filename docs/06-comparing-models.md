@@ -50,7 +50,7 @@ uses the 1%-99% range. We score TimesFM 3 on forecasting only.
 A TSFM is useful only if it is better than the simpler methods that already exist. Thus
 the comparison also has three classical models from the
 [statsforecast](https://github.com/Nixtla/statsforecast) library (Nixtla). For how they
-work, see [01-concepts.md](01-concepts.md#strong-baselines-ets-and-mstl).
+work, see [08-classical-baselines.md](08-classical-baselines.md).
 
 | | Seasonal naive | ETS | MSTL |
 |---|---|---|---|

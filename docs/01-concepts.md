@@ -515,7 +515,8 @@ baselines. They are fast, they need no GPU, and they have been used for decades.
 These baselines are fitted again on each 12-week history: they learn from the data of
 this project, which the TSFMs do not do. They do not get the holiday indicator (they have
 no input for it). If a TSFM is not clearly better than MSTL, the simpler method is
-enough.
+enough. For how each baseline works in detail, see
+[08-classical-baselines.md](08-classical-baselines.md).
 
 ## Is a difference real? Paired comparisons
 

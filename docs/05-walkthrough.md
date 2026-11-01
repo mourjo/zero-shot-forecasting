@@ -41,6 +41,8 @@ The other notes in this folder:
   better.
 - [07-further-reading.md](07-further-reading.md): books, papers, benchmarks and tools
   about forecasting, evaluation, anomaly detection and time series foundation models.
+- [08-classical-baselines.md](08-classical-baselines.md): how the three classical
+  baselines (seasonal naive, ETS, MSTL) work, how the project runs them, and their results.
 
 ## Quick start
 
