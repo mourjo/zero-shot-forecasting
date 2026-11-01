@@ -227,6 +227,9 @@ summary table names the better model for each score.
 For how we score the models, and for all the results, see
 [docs/06-comparing-models.md](docs/06-comparing-models.md).
 
+For books, papers, benchmarks and tools about this area, see
+[docs/07-further-reading.md](docs/07-further-reading.md).
+
 ## Possible uses in software observability
 
 Software systems have many time series with the same properties: daily and weekly
