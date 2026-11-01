@@ -216,6 +216,23 @@ Before the pandemic, approximately 1% of the hours were above the range, and 1% 
 below it. This is the correct quantity. Thus the model does not send too many false
 alerts.
 
+### 4. Compare with a different model: Chronos-2
+
+`uv run main.py compare` does the backtest and the anomaly check again with
+[Chronos-2](https://huggingface.co/amazon/chronos-2) from Amazon, with the same data and
+the same procedure. The results:
+
+- **Forecasting:** the two models are almost equal. The average error was 2.44% with
+  Timestral and 2.52% with Chronos-2, and the 80% ranges of both models are correct.
+  Chronos-2 was approximately 3.7 times faster.
+- **Anomaly detection:** Timestral is better. The 1%-99% range of Chronos-2 is too
+  narrow: before the pandemic, 3.0% of the hours were outside it (the correct quantity is
+  2%). Thus Chronos-2 found 80 anomalous days and Timestral found 52. Chronos-2 found 45
+  of the 52 Timestral days. Some of its other days are real events, but some are
+  probably false alerts.
+
+For all the results, see [docs/06-timestral-vs-chronos-2.md](docs/06-timestral-vs-chronos-2.md).
+
 ## Possible uses in software observability
 
 Software systems have many time series with the same properties: daily and weekly
@@ -246,12 +263,15 @@ do not give to it.
 ## Quick start
 
 ```sh
-uv sync                     # installs timestral from GitHub, and pandas, matplotlib, holidays
+uv sync                     # installs timestral from GitHub, chronos-forecasting, pandas, matplotlib, holidays
 uv run main.py signal       # the chart above: fixed threshold and moving average (no model)
 uv run main.py forecast
 uv run main.py backtest
 uv run main.py anomalies
+uv run main.py compare      # the backtest and the anomaly check with Timestral and Chronos-2
 ```
+
+Add `--model chronos-2` to a command to use Chronos-2 instead of Timestral.
 
 The first run downloads the data (124 MB, into `data/`) and the model (837 MB, into the
 Hugging Face cache). Each command shows a summary and writes a CSV file or a chart to

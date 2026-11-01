@@ -401,7 +401,7 @@ Backtest after each change to check that accuracy holds where it matters to you.
 
 | Where | What it calls |
 |---|---|
-| `forecasting.load_forecaster` | `from_pretrained(model_id, quantile_real_cap_k=1.0)`; `--model` picks the size |
-| `forecasting._forecast` | `forecast(context, prediction_length, known_covariates=holidays)`; symmetric averaging and clipping left on |
+| `forecasting.TimestralModel` | `from_pretrained(model_id, device=..., quantile_real_cap_k=1.0)`; `--model timestral` or `--model timestral-28m` picks the size |
+| `forecasting.TimestralModel.predict` | `forecast(context, prediction_length, known_covariates=holidays)`; symmetric averaging and clipping left on |
 | `forecasting.forecast` | A `(5, T)` batch, one row per country, with up to 32,768 hours of history and a 720-hour horizon; keeps the 10%, 50% and 90% quantiles, plus the mean from all 21 |
 | `forecasting.rolling` | One row per (block, country), each with the same 2,048-hour window, in chunks of 64. Day-ahead: 24-hour blocks, made 16 hours early in the backtest (`gap=16`); week-ahead: 168-hour blocks. Keeps the 1%, 50% and 99% quantiles (10% / 90% in the backtest) |

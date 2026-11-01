@@ -1,22 +1,32 @@
-"""Thin wrapper around Timestral that speaks pandas.
+"""Thin wrapper around two time series foundation models that speaks pandas.
 
-Timestral works on arrays shaped `(series, time)` and returns 21 quantiles per
-forecast step. Here every column of an hourly frame is one series (one country), and
-results come back as frames indexed by time so the rest of the demo never touches raw
-arrays.
+Both models work here in the same way. Each one gets a batch of history rows, shaped
+`(rows, time)`, and an optional known-future covariate for each row (the public
+holidays). Each one gives back the same 21 quantile levels for each forecast step. Here
+every column of an hourly frame is one series (one country), and results come back as
+frames indexed by time so the rest of the demo never touches raw arrays.
+
+- Timestral (Mistral AI): `mistralai/Timestral-209M` or `mistralai/Timestral-28M`.
+- Chronos-2 (Amazon): `amazon/chronos-2`.
 """
 
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from timestral import TimestralForecaster
 
-DEFAULT_MODEL = "mistralai/Timestral-209M"
+# Short names for the command line. Any other Hugging Face id also works: an id that
+# contains "chronos" loads Chronos-2, all others load Timestral.
+MODELS = {
+    "timestral": "mistralai/Timestral-209M",
+    "timestral-28m": "mistralai/Timestral-28M",
+    "chronos-2": "amazon/chronos-2",
+}
+DEFAULT_MODEL = "timestral"
 STEP = pd.Timedelta(hours=1)
-# Keep every forecast within one "typical swing" of the range the history has seen. The
-# library default (10,000) is so loose that, on rare days such as Christmas with the holiday
-# covariate, the 99% quantile reached millions of MW. Medians are unaffected.
+# Keep every Timestral forecast within one "typical swing" of the range the history has
+# seen. The library default (10,000) is so loose that, on rare days such as Christmas with
+# the holiday covariate, the 99% quantile reached millions of MW. Medians are unaffected.
 QUANTILE_CAP = 1.0
 
 
@@ -36,9 +46,83 @@ class QuantileForecast:
     high_level: float
 
 
-def load_forecaster(model_id: str = DEFAULT_MODEL) -> TimestralForecaster:
-    # Downloads config.json + model.safetensors from Hugging Face once, then reads the local cache.
-    return TimestralForecaster.from_pretrained(model_id, quantile_real_cap_k=QUANTILE_CAP)
+@dataclass
+class RawForecast:
+    """What every model gives back: `quantiles` (rows, horizon, levels) and `mean` (rows, horizon)."""
+
+    levels: np.ndarray
+    quantiles: np.ndarray
+    mean: np.ndarray
+
+    def quantile(self, level: float) -> np.ndarray:
+        match = np.flatnonzero(np.isclose(self.levels, level))
+        if not len(match):
+            raise ValueError(f"quantile {level} is not one of the model's levels {self.levels.tolist()}")
+        return self.quantiles[..., match[0]]
+
+
+class Model:
+    """One interface for both models. `label` is the name in tables, charts and file names."""
+
+    label: str
+    model_id: str
+
+    def predict(self, context: np.ndarray, horizon: int, known: np.ndarray | None) -> RawForecast:
+        """`context` is (rows, time). `known`, if given, is (rows, time + horizon)."""
+        raise NotImplementedError
+
+
+class TimestralModel(Model):
+    def __init__(self, model_id: str, device: str):
+        from timestral import TimestralForecaster
+
+        self.label, self.model_id = "Timestral", model_id
+        # Downloads config.json + model.safetensors from Hugging Face once, then reads the local cache.
+        self.forecaster = TimestralForecaster.from_pretrained(model_id, device=device,
+                                                              quantile_real_cap_k=QUANTILE_CAP)
+
+    def predict(self, context, horizon, known):
+        # Timestral wants (rows, variates, time); the 0/1 holiday rows are recognised as an indicator.
+        result = self.forecaster.forecast(
+            context,
+            prediction_length=horizon,
+            known_covariates=None if known is None else known[:, None, :],
+        )
+        levels = np.asarray(result.quantile_levels, dtype=float)
+        quantiles = result.quantiles[:, 0].cpu().numpy()  # (rows, horizon, 21)
+        return RawForecast(levels, quantiles, _mean(levels, quantiles))
+
+
+class Chronos2Model(Model):
+    def __init__(self, model_id: str, device: str):
+        from chronos import Chronos2Pipeline
+
+        self.label, self.model_id = "Chronos-2", model_id
+        self.pipeline = Chronos2Pipeline.from_pretrained(model_id, device_map=device)
+        self.levels = np.asarray(self.pipeline.quantiles, dtype=float)
+
+    def predict(self, context, horizon, known):
+        # Chronos-2 wants one dict for each row. A known-future covariate is given twice: its
+        # past values (aligned with the history) and its future values (for the horizon).
+        width = context.shape[1]
+        inputs = []
+        for i, row in enumerate(context):
+            item = {"target": row}
+            if known is not None:
+                item["past_covariates"] = {"holiday": known[i, :width]}
+                item["future_covariates"] = {"holiday": known[i, width:width + horizon]}
+            inputs.append(item)
+        quantiles, mean = self.pipeline.predict_quantiles(inputs, prediction_length=horizon,
+                                                          quantile_levels=self.levels.tolist())
+        # Each item is (variates, horizon, levels) and (variates, horizon); we have one variate.
+        quantiles = np.stack([q[0].float().cpu().numpy() for q in quantiles])
+        mean = np.stack([m[0].float().cpu().numpy() for m in mean])
+        return RawForecast(self.levels, quantiles, mean)
+
+
+def load_forecaster(name: str = DEFAULT_MODEL, device: str = "cpu") -> Model:
+    model_id = MODELS.get(name, name)
+    return (Chronos2Model if "chronos" in model_id.lower() else TimestralModel)(model_id, device)
 
 
 def future_index(history: pd.DataFrame, horizon: int) -> pd.DatetimeIndex:
@@ -46,7 +130,7 @@ def future_index(history: pd.DataFrame, horizon: int) -> pd.DatetimeIndex:
 
 
 def forecast(
-    forecaster: TimestralForecaster,
+    model: Model,
     history: pd.DataFrame,
     horizon: int,
     known: pd.DataFrame | None = None,
@@ -56,25 +140,26 @@ def forecast(
     """Forecast `horizon` hours past the end of `history`, for every column at once.
 
     `known` is an optional known-future covariate, one column per series, covering the
-    history and the horizon. Timestral reads at most the last 32,768 hours of history.
+    history and the horizon. Timestral reads at most the last 32,768 hours of history,
+    Chronos-2 at most the last 8,192.
     """
     future = future_index(history, horizon)
     covariate = None
     if known is not None:
         covariate = known.loc[history.index[0]:future[-1], history.columns].to_numpy(copy=True).T
     # copy=True: pandas returns read-only arrays, which PyTorch warns about.
-    result = _forecast(forecaster, history.to_numpy(copy=True).T, horizon, covariate)
+    result = model.predict(history.to_numpy(copy=True).T, horizon, covariate)
 
     def frame(values: np.ndarray) -> pd.DataFrame:
         # (series, horizon) -> (horizon, series)
         return pd.DataFrame(values.T, index=future, columns=history.columns)
 
-    quantiles = [result.quantile(q)[:, 0].numpy() for q in (low, 0.5, high)]
-    return QuantileForecast(*map(frame, quantiles), frame(_mean(result)[:, 0]), low, high)
+    quantiles = [result.quantile(q) for q in (low, 0.5, high)]
+    return QuantileForecast(*map(frame, quantiles), frame(result.mean), low, high)
 
 
 def rolling(
-    forecaster: TimestralForecaster,
+    model: Model,
     history: pd.DataFrame,
     start: str | pd.Timestamp,
     end: str | pd.Timestamp,
@@ -115,9 +200,9 @@ def rolling(
     quantiles = []
     for first in range(0, len(contexts), batch_size):
         batch = slice(first, first + batch_size)
-        result = _forecast(forecaster, contexts[batch], gap + horizon, None if covariate is None else covariate[batch])
+        result = model.predict(contexts[batch], gap + horizon, None if covariate is None else covariate[batch])
         # Keep the block itself, not the `gap` hours between the forecast and the block.
-        picked = [result.quantile(q)[:, 0, gap:].numpy() for q in (low, 0.5, high)] + [_mean(result)[:, 0, gap:]]
+        picked = [result.quantile(q)[:, gap:] for q in (low, 0.5, high)] + [result.mean[:, gap:]]
         quantiles.append(np.stack(picked, axis=-1))  # (rows, horizon, 4)
 
     n_series = len(history.columns)
@@ -138,26 +223,12 @@ def _in_tz(when: str | pd.Timestamp, history: pd.DataFrame) -> pd.Timestamp:
     return when.tz_localize(history.index.tz) if when.tz is None else when
 
 
-def _mean(result) -> np.ndarray:
-    """Approximate the mean of each forecast step from its quantiles.
+def _mean(levels: np.ndarray, quantiles: np.ndarray) -> np.ndarray:
+    """Approximate the mean of each forecast step from its quantiles (Timestral gives no mean).
 
     The mean is the area under the quantile function. Between two known levels it is
     linear, and in the tails below 1% and above 99% it is flat.
     """
-    levels = np.array([0.0, *result.quantile_levels, 1.0])
-    q = result.quantiles.numpy()
-    q = np.concatenate([q[..., :1], q, q[..., -1:]], axis=-1)
+    levels = np.array([0.0, *levels, 1.0])
+    q = np.concatenate([quantiles[..., :1], quantiles, quantiles[..., -1:]], axis=-1)
     return (np.diff(levels) * (q[..., 1:] + q[..., :-1]) / 2).sum(axis=-1)
-
-
-def _forecast(forecaster: TimestralForecaster, context: np.ndarray, horizon: int, known: np.ndarray | None):
-    """Run Timestral, optionally with one known-future covariate per series.
-
-    `known` is `(series, time + horizon)`. In this project it is the public-holiday
-    indicator: 0/1 rows, which Timestral recognises as an indicator by itself.
-    """
-    return forecaster.forecast(
-        context,
-        prediction_length=horizon,
-        known_covariates=None if known is None else known[:, None, :],  # (series, 1 covariate, time + horizon)
-    )

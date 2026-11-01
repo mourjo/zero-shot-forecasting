@@ -37,6 +37,8 @@ The other notes in this folder:
   setting you can change, and their measured effect on speed and accuracy.
 - [04-anomaly-detection.md](04-anomaly-detection.md): how forecast-based anomaly
   detection works, how this project implements it, and how to tune it.
+- [06-timestral-vs-chronos-2.md](06-timestral-vs-chronos-2.md): the same backtest and
+  anomaly check with Amazon's Chronos-2, compared with Timestral.
 
 ## Quick start
 
