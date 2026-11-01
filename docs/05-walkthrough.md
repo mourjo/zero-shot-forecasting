@@ -39,6 +39,8 @@ The other notes in this folder:
 - [06-comparing-models.md](06-comparing-models.md): Timestral, Chronos-2 and TimesFM 3
   on the same forecasts and the same anomaly check, how they are scored, and which is
   better.
+- [07-further-reading.md](07-further-reading.md): books, papers, benchmarks and tools
+  about forecasting, evaluation, anomaly detection and time series foundation models.
 
 ## Quick start
 
