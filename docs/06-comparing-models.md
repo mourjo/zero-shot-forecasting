@@ -387,7 +387,7 @@ From `output/compare-summary.csv`:
 | forecasting | hours in the 80% range (best: 80) | **81.1** | 77.1 | 76.7 | 83.1 | 78.2 | 89.8 | Timestral |
 | forecasting | width of the 80% range % (lower is better) | 13.95 | 13.07 | **12.29** | 22.44 | 89.53 | 29.34 | TimesFM 3 |
 | forecasting | is the WQL winner clearly better than the second? (Diebold–Mariano) | second | | best | | | | **no clear winner** (p = 0.91) |
-| cost | seconds for the 260 week-ahead forecasts (CPU) | 167 | 40 | 50 | **4** | 113 | 37 | Seasonal naive |
+| cost | seconds for the 260 week-ahead forecasts (CPU) | 95 | 26 | 41 | **4** | 87 | 32 | Seasonal naive |
 | anomalies | **hours outside 1%-99% before the pandemic %** (main score, best: 2) | **1.8** | 3.1 | not possible | 5.9 | 5.1 | 3.8 | Timestral |
 | anomalies | anomalous days before the pandemic (fewer = fewer false alerts) | **20** | 35 | not possible | 62 | 72 | 38 | Timestral |
 | anomalies | lockdown days found, first 14 days (more is better) | 6 | 5 | not possible | 6 | 1 | **7** | MSTL |
@@ -408,8 +408,8 @@ Chronos-2's range is too narrow (3.1%, 35 alerts), and the baselines' ranges are
 but with almost twice as many alerts on usual days. TimesFM 3 cannot do this check.
 
 **Speed: seasonal naive is the fastest** (it only copies the last week), and of the TSFMs,
-Chronos-2 is the fastest. The times change between runs: in an earlier run, Timestral took
-100 seconds, not 167.
+Chronos-2 is the fastest. The times change between runs on the same laptop: in another run,
+Timestral took 167 seconds, not 95.
 
 ## 1. Forecasting
 
@@ -596,8 +596,8 @@ Each mark is one anomalous day. The two shaded periods tell you what a mark mean
 - The label of each row gives these two counts for that model and country, for example
   "16 usual · 1 lockdown" for Chronos-2 in Italy.
 
-The anomaly chart of each model, with the daily energy, is in `output/anomalies-168h.png`
-(Timestral) and `output/anomalies-168h-<model>.png` for the other models.
+The anomaly plot of each model, with the daily energy, is in
+[The anomaly plot of each model](#the-anomaly-plot-of-each-model) below.
 
 - **ETS flags almost every Monday** in Germany and Italy: the regular row of marks, all
   of them "spikes". Each forecast is made at Sunday midnight. A flat forecast continues
@@ -632,6 +632,52 @@ a lockdown alert from them is less informative. Both models find only the
 first days of each lockdown, because of the procedure: after one week, the lockdown is in
 the history, and the models expect the low demand. See
 [04-anomaly-detection.md](04-anomaly-detection.md).
+
+### The anomaly plot of each model
+
+The same plot as in the README, for each model: the actual daily energy (blue), the energy
+that the model expected (the sum of its hourly mean forecasts, in orange) and a
+red dot on each anomalous day. The dashed line is the start of the lockdown. All six plots
+use the same week-ahead forecasts as the tables above.
+
+**Timestral.** The expected energy follows the actual energy closely on usual days. The
+red dots are on the main events: Christmas, the start of the lockdowns, the reopening of
+France in May and the August closures in Italy.
+
+![anomalies Timestral](../output/anomalies-168h.png)
+
+**Chronos-2.** Almost the same expected energy as Timestral, but more red dots, because its
+1%-99% range is narrower: for example in Italy in late October and early January.
+
+![anomalies Chronos-2](../output/anomalies-168h-chronos-2.png)
+
+**TimesFM 3.** There are no red dots: TimesFM 3 has no 1% and 99% quantiles, so it cannot do
+the anomaly check. The plot still shows its expected energy. It follows the actual energy as
+closely as the other TSFMs, and after each lockdown starts it is too high for one to two
+weeks, like the others. The model sees the same surprises, but without the tails it cannot
+say which are improbable.
+
+![anomalies TimesFM 3](../output/anomalies-168h-timesfm-3.png)
+
+**Seasonal naive.** The expected energy is the actual energy of the week before, so the
+expected line is the blue line moved one week to the right. After a holiday or an unusual
+week, the next week's expectation repeats it. Thus it has many red dots on usual days.
+
+![anomalies seasonal naive](../output/anomalies-168h-seasonal-naive.png)
+
+**ETS.** The expected energy is a series of flat steps: one level for each week, far below
+the weekday demand in Germany, Italy and Spain. This is the flat ETS(A,N,N) forecast
+explained in [08-classical-baselines.md](08-classical-baselines.md#ets-exponential-smoothing).
+The regular red dots are Mondays. In Italy from April to June, AutoETS chose other forms,
+and the expected line goes up and down in each week.
+
+![anomalies ETS](../output/anomalies-168h-ets.png)
+
+**MSTL.** The expected energy has the correct weekly shape, but it does not know holidays:
+at Christmas it expects a usual week, and the actual energy is far below it. It also has
+many red dots in Italy in August, when the closures change the weekly pattern.
+
+![anomalies MSTL](../output/anomalies-168h-mstl.png)
 
 ## Models that we did not add
 

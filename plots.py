@@ -11,9 +11,11 @@ import pandas as pd
 from data import country_name
 from forecasting import BASELINES, QuantileForecast
 
+# In a chart of one model: blue is always the actual value, orange is always the forecast.
 ACTUAL = "#2a78d6"
 FORECAST = "#eb6834"
 # One fixed colour per model, so that a model has the same colour in every chart.
+# In a chart of several models, each model needs its own colour (the actual value stays blue).
 # The classical baselines get the next colours and a dashed line, so that they stand apart.
 MODEL_COLORS = {"Timestral": "#eb6834", "Chronos-2": "#6250d6", "TimesFM 3": "#1baf7a",
                 "Seasonal naive": "#eda100", "ETS": "#e87ba4", "MSTL": "#008300"}
@@ -100,24 +102,30 @@ def plot_forecast(history: pd.DataFrame, fc: QuantileForecast, path: Path, label
                   show_days: int = 28):
     recent = history.iloc[-show_days * 24:]
     fig, axes = _panels(list(history.columns),
-                        f"Hourly load: last {show_days} days and the next {len(fc.median) // 24} days by {label}", "MW")
+                        f"{label}: hourly load, last {show_days} days and the next {len(fc.median) // 24} days", "MW")
     for ax, code in zip(axes, history.columns):
         ax.plot(recent.index, recent[code], color=ACTUAL, linewidth=0.8, label="actual")
-        _band(ax, fc, code, label, model_color(label))
+        _band(ax, fc, code, f"{label} forecast")
     _save(fig, axes, path)
 
 
-def plot_anomalies(actual: pd.DataFrame, expected: pd.DataFrame, days: pd.DataFrame, lockdowns: dict[str, str],
-                   horizon: int, path: Path, label: str = "Timestral"):
+def plot_anomalies(actual: pd.DataFrame, expected: pd.DataFrame, days: pd.DataFrame | None,
+                   lockdowns: dict[str, str], horizon: int, path: Path, label: str = "Timestral",
+                   note: str = "red = anomalous day"):
+    """Daily energy, actual and expected, with a red dot on each anomalous day.
+
+    `days` is None for a model that cannot do the anomaly check: then the chart has no dots,
+    and `note` says why.
+    """
     ahead = {24: "day-ahead", 168: "week-ahead"}.get(horizon, f"{horizon}-hours-ahead")
-    fig, axes = _panels(list(actual.columns), f"Daily energy vs the {ahead} forecast by {label}; red = anomalous day",
-                        "MWh")
+    fig, axes = _panels(list(actual.columns), f"{label}: daily energy vs the {ahead} forecast; {note}", "MWh")
     for ax, code in zip(axes, actual.columns):
-        ax.plot(expected.index, expected[code], color=model_color(label), linewidth=1.2, label="expected (forecast)")
+        ax.plot(expected.index, expected[code], color=FORECAST, linewidth=1.2, label=f"{label} forecast (expected)")
         ax.plot(actual.index, actual[code], color=ACTUAL, linewidth=1, label="actual")
-        hits = days[days["country"] == code]
-        ax.scatter(hits["day"], hits["actual MWh"], s=24, color=ANOMALY, edgecolor="white", linewidth=1, zorder=3,
-                   label="anomalous day")
+        if days is not None:
+            hits = days[days["country"] == code]
+            ax.scatter(hits["day"], hits["actual MWh"], s=24, color=ANOMALY, edgecolor="white", linewidth=1,
+                       zorder=3, label="anomalous day")
         if code in lockdowns:
             ax.axvline(pd.Timestamp(lockdowns[code], tz="UTC"), color=INK, linewidth=0.8, linestyle=(0, (4, 3)),
                        label="lockdown starts")
