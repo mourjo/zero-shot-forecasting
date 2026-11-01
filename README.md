@@ -222,6 +222,20 @@ summary table names the better model for each score.
   sends 75% more alerts on usual days. TimesFM 3 gives only the 10%-90% range, so it
   cannot do this check.
 
+The chart shows each day that Timestral and Chronos-2 flagged as anomalous, one mark for
+each day. TimesFM 3 is not in it. How to read it:
+
+- **The grey area is usual days** (before the pandemic). A mark there is a holiday or a
+  false alert. Chronos-2 has more marks in the grey area, for example in Italy in
+  November and January.
+- **The red area is the first two weeks of each lockdown.** A mark there is a hit: the
+  model found the lockdown.
+- **The labels on the left give the counts** for each model and country: marks in the
+  grey area ("usual") and in the red area ("lockdown"). In total, Timestral has 20 usual
+  and 6 lockdown, and Chronos-2 has 35 usual and 5 lockdown.
+- The marks after the red area (for example in May and August) are later events, such as
+  the reopening of France and the August closures. Both models find most of them.
+
 ![compare-anomalies](output/compare-anomalies.png)
 
 For how we score the models, and for all the results, see
