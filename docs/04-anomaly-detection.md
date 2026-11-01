@@ -246,7 +246,7 @@ flowchart LR
 |---|---|
 | `origins = pd.date_range(start, end - horizon, freq=horizon)` | The start of every block; a last block that would run past `end` is left out |
 | `positions = history.index.get_indexer(origins)` | Where each block starts, as a row number in the data |
-| `made = positions - gap` | Where each forecast is made: `gap` hours before its block (0 here; 16 in the backtest, to match the grid operators' publishing time) |
+| `made = positions - gap` | Where each forecast is made: `gap` hours before its block (0 here: each block is forecast at its start) |
 | `values[:, m - context:m]` | The `context` hours before each forecast, for every country |
 | `covariate[:, m - context:p + horizon]` | The holiday flags over the history *and* the block: they are known in advance |
 | `for first in range(0, len(contexts), batch_size)` | Send 64 rows at a time, to keep memory in check |

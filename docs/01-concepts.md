@@ -214,7 +214,7 @@ Two quantiles together make an **interval** (or *prediction interval*): a range 
 real value should fall in with a stated probability.
 
 - 10% to 90% quantile = an **80% interval**: the real value should land inside it about
-  8 times out of 10. The `forecast` and `backtest` charts shade this band.
+  8 times out of 10. The `forecast` charts shade this band.
 - 1% to 99% quantile = a **98% interval**: the real value should fall outside it only
   about 2 times in 100. The `anomalies` command uses this one.
 
@@ -408,8 +408,10 @@ information you wouldn't have had at the time is called **look-ahead** (or *leak
 and it makes results look far better than they really are.
 
 A single backtest is one sample: one month might be easy, the next one hard. Testing
-several cutoffs (`--cutoff`) gives a fairer picture, and a cutoff just before an
-upheaval shows how a forecast copes with it:
+several cutoffs gives a fairer picture, and a cutoff just before an upheaval shows how a
+forecast copes with it. This project moves the cutoff forward one week at a time, and
+forecasts the week after each cutoff (a *rolling-origin* evaluation; see
+[06-comparing-models.md](06-comparing-models.md)):
 
 ```mermaid
 gantt
@@ -452,29 +454,32 @@ MW.)
 
 An error number means little on its own. Is 2% good? It depends on how hard the data
 is. So you compare with a **baseline**: a simpler forecast that any serious method
-should beat. This project uses two:
+should beat. This project uses:
 
 - **Last week**: "each hour will be the same as the same hour one week earlier".
   (Repeating the last full cycle like this is called a *seasonal naive* forecast.)
-- **The grid operator**: the day-ahead forecast each country's grid operator
-  published, which comes with the data. This is a professional forecast, built with
-  weather forecasts and years of tuning: a high bar.
+
+The data also has a professional baseline: the day-ahead forecast each country's grid
+operator published, built with weather forecasts and years of tuning. It is a high bar,
+but it is a day-ahead forecast, so the project does not compare it with its week-ahead
+forecasts.
 
 ```mermaid
 flowchart LR
-    H["Hidden month:<br/>actual demand"] --> E1["MAPE of Timestral"]
+    H["Hidden weeks:<br/>actual demand"] --> E1["MAPE of Timestral"]
     F["Timestral forecast"] --> E1
-    H --> E2["MAPE of each baseline"]
-    B["Baselines:<br/>last week, grid operator"] --> E2
+    H --> E2["MAPE of the baseline"]
+    B["Baseline:<br/>last week"] --> E2
     E1 --> C{"Is Timestral's<br/>MAPE lower?"}
     E2 --> C
     C -- "yes" --> Y["The model adds value"]
     C -- "no" --> N["The baseline does as well"]
 ```
 
-In the September 2020 backtest, Timestral beat "last week" in every country, and beat
-the grid operators' own day-ahead forecasts in Germany and Great Britain. The operators
-won in France, Italy and Spain.
+In this project's week-ahead forecasts (October 2019 to February 2020), Timestral beat
+"last week" in every country: an average error of 4.2% against 6.0%. (An earlier version
+of the project also compared day-ahead forecasts with the grid operators' forecasts. The
+operators, who use weather forecasts, won in France, Italy and Spain.)
 
 ## Calibration: can the ranges be trusted?
 
@@ -498,9 +503,10 @@ flowchart TD
     B -- "much more than 80%" --> U["Underconfident:<br/>ranges too wide"]
 ```
 
-In this project, the day-ahead forecasts' 80% interval covered 79-89% of the hours in
-September 2020: close to the promise, and slightly on the wide side, the safer side to
-be on.
+In this project, Timestral's week-ahead 80% interval covered 79-83% of the hours from
+October 2019 to February 2020: close to the promise, and slightly on the wide side, the
+safer side to be on. [06-comparing-models.md](06-comparing-models.md) shows the same
+check for other models.
 
 Calibration matters because the ranges are what you base decisions on: "how much
 generation must stand by to be 99% safe?" is a question about a quantile, not about
