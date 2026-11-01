@@ -1,0 +1,16 @@
+model A,model B,WQL A %,WQL B %,difference A − B,weeks A better,country-weeks A better,DM statistic,p-value,p-value (Holm),"verdict (5%, Holm)"
+Timestral,Chronos-2,3.2767,3.39,-0.1133,12 of 22,67 of 110,-2.4079,0.0253,0.1013,no clear difference
+Timestral,TimesFM 3,3.2767,3.2012,0.0755,14 of 22,58 of 110,0.3634,0.72,0.9149,no clear difference
+Timestral,Seasonal naive,3.2767,5.1682,-1.8915,22 of 22,101 of 110,-5.8943,0.0,0.0001,Timestral is better
+Timestral,ETS,3.2767,16.1103,-12.8336,22 of 22,107 of 110,-17.9316,0.0,0.0,Timestral is better
+Timestral,MSTL,3.2767,4.9359,-1.6592,21 of 22,101 of 110,-6.847,0.0,0.0,Timestral is better
+Chronos-2,TimesFM 3,3.39,3.2012,0.1888,12 of 22,57 of 110,0.8769,0.3905,0.9149,no clear difference
+Chronos-2,Seasonal naive,3.39,5.1682,-1.7783,22 of 22,100 of 110,-5.6292,0.0,0.0001,Chronos-2 is better
+Chronos-2,ETS,3.39,16.1103,-12.7203,22 of 22,106 of 110,-17.3975,0.0,0.0,Chronos-2 is better
+Chronos-2,MSTL,3.39,4.9359,-1.546,21 of 22,102 of 110,-6.6246,0.0,0.0,Chronos-2 is better
+TimesFM 3,Seasonal naive,3.2012,5.1682,-1.967,22 of 22,97 of 110,-4.0134,0.0006,0.0036,TimesFM 3 is better
+TimesFM 3,ETS,3.2012,16.1103,-12.9091,22 of 22,106 of 110,-21.1078,0.0,0.0,TimesFM 3 is better
+TimesFM 3,MSTL,3.2012,4.9359,-1.7347,21 of 22,97 of 110,-4.034,0.0006,0.0036,TimesFM 3 is better
+Seasonal naive,ETS,5.1682,16.1103,-10.942,21 of 22,98 of 110,-11.4793,0.0,0.0,Seasonal naive is better
+Seasonal naive,MSTL,5.1682,4.9359,0.2323,11 of 22,57 of 110,1.0515,0.305,0.9149,no clear difference
+ETS,MSTL,16.1103,4.9359,11.1743,1 of 22,9 of 110,13.0378,0.0,0.0,MSTL is better

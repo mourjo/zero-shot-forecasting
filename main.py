@@ -5,8 +5,8 @@
     uv run main.py anomalies  # days that fell outside the week-ahead forecast, e.g. COVID lockdowns
     uv run main.py compare    # forecasts and anomaly checks with every model, scored side by side
 
-The models are Timestral (default), Chronos-2 and TimesFM 3. Add --model chronos-2 or
---model timesfm-3 to a command to use another model.
+The models are Timestral (default), Chronos-2 and TimesFM 3, and three classical baselines:
+seasonal-naive, ets and mstl. Add --model <name> to a command to use another model.
 """
 
 import argparse
@@ -17,10 +17,11 @@ import numpy as np
 import pandas as pd
 
 from data import DEFAULT_COUNTRIES, LOCKDOWNS, country_name, holiday_indicator, load_power_data
-from forecasting import DECILES, DEFAULT_MODEL, MODELS, Model, QuantileForecast, forecast, future_index, \
-    load_forecaster, rolling
-from plots import (plot_anomalies, plot_compare_anomalies, plot_compare_forecast, plot_compare_week, plot_forecast,
-                   plot_signal)
+from evaluation import compare_pairs, score_forecasts, weekly_wql
+from forecasting import DEFAULT_MODEL, MODELS, Model, QuantileForecast, forecast, future_index, load_forecaster, \
+    rolling
+from plots import (plot_anomalies, plot_compare_anomalies, plot_compare_forecast, plot_compare_week,
+                   plot_compare_weekly, plot_forecast, plot_signal)
 
 OUTPUT = Path("output")
 DAY = pd.Timedelta(days=1)
@@ -28,17 +29,11 @@ CONTEXT = 2048  # hours of history for each rolling (week-ahead) forecast, ~12 w
 NORMAL_UNTIL = "2020-02-29"  # last day before the pandemic: the forecasts are scored and calibrated up to here
 LOCKDOWN_WINDOW = 14  # days from the start of each lockdown that `compare` checks
 SAMPLE_WEEK = "2019-11-18"  # a usual week, for the chart of the week-ahead forecasts
-COMPARE_MODELS = "timestral,chronos-2,timesfm-3"
+COMPARE_MODELS = "timestral,chronos-2,timesfm-3,seasonal-naive,ets,mstl"
 
 
 def holidays_for(index: pd.DatetimeIndex, args: argparse.Namespace) -> pd.DataFrame | None:
     return None if args.no_holidays else holiday_indicator(index, args.countries)
-
-
-def mape(predicted: pd.DataFrame, actual: pd.DataFrame) -> pd.Series:
-    """Mean absolute percentage error per country: on average, how many % off the forecast was."""
-    actual = actual.loc[predicted.index]
-    return ((predicted - actual).abs() / actual).mean() * 100
 
 
 def run_signal(power, args: argparse.Namespace):
@@ -104,28 +99,6 @@ def week_ahead(model: Model, power, args: argparse.Namespace) -> tuple[QuantileF
     fc = rolling(model, load, args.start, end, horizon=args.horizon, context=args.context,
                  known=holidays_for(load.index, args))
     return fc, time.perf_counter() - clock
-
-
-def score_forecasts(load: pd.DataFrame, fc: QuantileForecast) -> pd.DataFrame:
-    """Forecast quality per country, on the usual days before the pandemic.
-
-    - MAPE: how far the median is from the actual demand, in %. Lower is better.
-    - WQL: weighted quantile loss over the 9 deciles, in %. It scores the whole forecast
-      distribution, not only the median. Lower is better.
-    - in 80%: % of hours between the 10% and the 90% quantile. Best near 80.
-    - 80% width: mean width of that range, as % of the actual demand. Narrower is sharper.
-    """
-    hours = fc.median.loc[:NORMAL_UNTIL].index
-    actual = load.loc[hours]
-    q = {level: frame.loc[hours] for level, frame in fc.levels.items()}
-    # Pinball loss of each decile, summed over the deciles and the hours, divided by the total demand.
-    loss = sum(np.maximum(level * (actual - q[level]), (level - 1) * (actual - q[level])) for level in DECILES)
-    return pd.DataFrame({
-        "MAPE %": mape(q[0.5], load),
-        "WQL %": 2 * loss.sum() / (len(DECILES) * actual.sum()) * 100,
-        "in 80% range %": ((actual >= q[0.1]) & (actual <= q[0.9])).mean() * 100,
-        "80% width %": ((q[0.9] - q[0.1]) / actual).mean() * 100,
-    })
 
 
 def find_anomalies(load: pd.DataFrame, fc: QuantileForecast, min_hours: int) -> tuple[pd.DataFrame, dict]:
@@ -198,7 +171,8 @@ def run_compare(power, args: argparse.Namespace):
         print(f"{model.label}: 30-day forecast, then week-ahead forecasts from {args.start} ...", flush=True)
         result = {"forecast": make_forecast(model, power, args)}
         result["week"], result["seconds"] = week_ahead(model, power, args)
-        result["score"] = score_forecasts(load, result["week"])
+        result["score"] = score_forecasts(load, result["week"], NORMAL_UNTIL)
+        result["weekly"] = weekly_wql(load, result["week"], NORMAL_UNTIL, args.horizon)
         if can_find_anomalies(model):
             result["days"], result["daily"], _ = write_anomalies(model, load, result["week"], args)
         results[model.label] = result
@@ -218,15 +192,32 @@ def run_compare(power, args: argparse.Namespace):
     first = results[labels[0]]["week"].median.index
     print(f"\n1. FORECASTING: week-ahead forecasts from {args.context} hours of history, scored on the usual days "
           f"{first[0]:%Y-%m-%d} .. {NORMAL_UNTIL}\n")
-    # Baseline that any model must beat: "each hour is the same as one week earlier".
-    hours = first[first <= pd.Timestamp(NORMAL_UNTIL, tz="UTC") + DAY - pd.Timedelta(hours=1)]
-    baseline = mape(load.shift(7 * 24).loc[hours], load)
     for metric in forecasting.columns.levels[1]:
-        table = forecasting.xs(metric, axis=1, level=1)
-        if metric == "MAPE %":
-            table = table.assign(**{"last week (baseline)": [*baseline, baseline.mean()]})
         print(f"{metric}:")
-        print(table.round(2).to_string(), "\n")
+        print(forecasting.xs(metric, axis=1, level=1).round(2).to_string(), "\n")
+
+    # Is a difference real? The same weeks, forecast by every model: a paired test.
+    weekly = {label: r["weekly"] for label, r in results.items()}
+    pairs = compare_pairs(weekly)
+    pairs.round(4).to_csv(OUTPUT / "compare-significance.csv", index=False)
+    plot_compare_weekly(weekly, OUTPUT / "compare-weekly.png")
+    ranking = sorted(labels, key=lambda label: results[label]["score"]["WQL %"].mean())
+    best = ranking[0]
+    involving = pairs[(pairs["model A"] == best) | (pairs["model B"] == best)].copy()
+    involving["other"] = np.where(involving["model A"] == best, involving["model B"], involving["model A"])
+    flip = involving["model B"] == best  # show every row as "best against other"
+    involving.loc[flip, "difference A − B"] *= -1
+    involving.loc[flip, "DM statistic"] *= -1
+    for column in ("weeks A better", "country-weeks A better"):
+        involving.loc[flip, column] = involving.loc[flip, column].map(_other_side)
+    against = involving.set_index("other").reindex(ranking[1:])[[
+        "difference A − B", "weeks A better", "country-weeks A better", "DM statistic", "p-value", "p-value (Holm)",
+        "verdict (5%, Holm)"]].rename(columns={"difference A − B": f"WQL {best} − other",
+                                                "weeks A better": f"weeks {best} better",
+                                                "country-weeks A better": f"country-weeks {best} better"})
+    print(f"Is the difference real? {best} (lowest WQL) against each other model, on the same "
+          f"{len(next(iter(weekly.values())))} weeks (Diebold–Mariano test on the weekly WQL):\n")
+    print(against.round(3).to_string(), "\n")
 
     # 2. Anomaly detection: only the models that give the 1% and 99% quantiles.
     calibration, flags, lockdown = None, None, None
@@ -263,15 +254,29 @@ def run_compare(power, args: argparse.Namespace):
 
     # 3. Which model is better.
     summary = _summary(results, labels, finders, flags, normal if finders else None, lockdown)
-    summary.insert(len(labels), "last week (baseline)", "")
-    summary.loc[("forecasting", "MAPE % of the median (lower is better)"), "last week (baseline)"] = \
-        f"{baseline.mean():.2f}"
+    runner_up = against.loc[ranking[1]]
+    row = {label: "" for label in labels}
+    row["better"] = (f"{best}, clearly (p = {runner_up['p-value (Holm)']:.3f})"
+                     if runner_up["p-value (Holm)"] < 0.05 else
+                     f"no clear winner (p = {runner_up['p-value (Holm)']:.2f})")
+    row[best], row[ranking[1]] = "best WQL", "second WQL"
+    summary.loc[("forecasting", "is the WQL winner clearly better than the second? (Diebold–Mariano)"),
+                list(row)] = list(row.values())
+    sections = ["forecasting", "cost", "anomalies"]
+    summary = summary.reindex(sorted(summary.index, key=lambda key: sections.index(key[0])))
     summary.to_csv(OUTPUT / "compare-summary.csv")
     print("\n3. SUMMARY: the best value in each row is the winner of that row\n")
     print(summary.to_string())
     print("\nWrote " + ", ".join(str(OUTPUT / f) for f in (
-        "compare-summary.csv", "compare-forecasting.csv", "compare-forecast.png", "compare-week.png",
+        "compare-summary.csv", "compare-forecasting.csv", "compare-significance.csv", "compare-forecast.png",
+        "compare-week.png", "compare-weekly.png",
         *(("compare-anomalies.csv", "compare-anomalies.png") if finders else ()))))
+
+
+def _other_side(count: str) -> str:
+    """'7 of 22' seen from model B is '15 of 22' seen from model A (ties are rare with these losses)."""
+    won, _, total = count.split()
+    return f"{int(total) - int(won)} of {total}"
 
 
 def _lockdown_hits(flags: pd.DataFrame, labels: list[str], countries) -> pd.DataFrame:

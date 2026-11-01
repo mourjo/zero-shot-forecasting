@@ -10,6 +10,12 @@ frames indexed by time so the rest of the demo never touches raw arrays.
   21 quantile levels, 1% to 99%.
 - Chronos-2 (Amazon): `amazon/chronos-2`. 21 quantile levels, 1% to 99%.
 - TimesFM 3 (Google): `google/timesfm-3.0-pytorch`. 9 quantile levels, 10% to 90% only.
+
+And three classical baselines from statsforecast (Nixtla), fitted again on each history:
+
+- Seasonal naive: each hour is the same as one week earlier.
+- ETS: exponential smoothing; AutoETS picks the form (a daily cycle, or none: here often none).
+- MSTL: the daily and the weekly cycle removed by STL, the rest forecast with ETS.
 """
 
 from dataclasses import dataclass
@@ -25,7 +31,12 @@ MODELS = {
     "timestral-28m": "mistralai/Timestral-28M",
     "chronos-2": "amazon/chronos-2",
     "timesfm-3": "google/timesfm-3.0-pytorch",
+    "seasonal-naive": "statsforecast:SeasonalNaive",
+    "ets": "statsforecast:AutoETS",
+    "mstl": "statsforecast:MSTL",
 }
+# The models that the baselines are, by label. Charts and tables can show them differently.
+BASELINES = ("Seasonal naive", "ETS", "MSTL")
 # The levels that every model gives. They are used to score the forecasts in the same way.
 DECILES = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
 DEFAULT_MODEL = "timestral"
@@ -76,6 +87,7 @@ class Model:
     model_id: str
     levels: np.ndarray  # the quantile levels that the model gives
     max_context: int  # the most history steps that the model reads
+    batch_size: int = 64  # rows for each predict() call in `rolling`
 
     def has_levels(self, *levels: float) -> bool:
         return all(np.isclose(self.levels, level).any() for level in levels)
@@ -158,9 +170,65 @@ class TimesFM3Model(Model):
         return RawForecast(self.levels, quantiles, _mean(self.levels, quantiles))
 
 
+class StatsBaseline(Model):
+    """A classical model from statsforecast, fitted again on every history row.
+
+    The intervals come from the model's own error distribution (normal for ETS and MSTL,
+    from the past errors for seasonal naive), at levels that give the same 1%-99% and
+    the deciles as the other models. The holiday covariate is not used: these models
+    have no input for it.
+    """
+
+    # statsforecast levels (central % intervals) and the quantiles that they give.
+    INTERVALS = (20, 40, 60, 80, 90, 98)
+
+    def __init__(self, model_id: str):
+        from statsforecast.models import MSTL, AutoETS, SeasonalNaive
+
+        kind = model_id.split(":", 1)[1]
+        self.model_id = model_id
+        self.label, self.make = {
+            "SeasonalNaive": ("Seasonal naive", lambda: SeasonalNaive(season_length=7 * 24)),
+            "AutoETS": ("ETS", lambda: AutoETS(season_length=24)),
+            "MSTL": ("MSTL", lambda: MSTL(season_length=[24, 7 * 24])),
+        }[kind]
+        lows = [round((100 - level) / 200, 3) for level in self.INTERVALS]
+        self.levels = np.array(sorted({*lows, 0.5, *(round(1 - q, 3) for q in lows)}))
+        self.max_context = 8_192
+        self.batch_size = 100_000  # all rows in one call: statsforecast fits them in parallel
+
+    def predict(self, context, horizon, known):
+        from statsforecast import StatsForecast
+
+        # statsforecast does not accept missing values: fill the few gaps in the data.
+        filled = pd.DataFrame(context.T).interpolate(limit_direction="both").to_numpy().T
+        width = filled.shape[1]
+        frame = pd.DataFrame({"unique_id": np.repeat(np.arange(len(filled)), width),
+                              "ds": np.tile(np.arange(width), len(filled)), "y": filled.ravel()})
+        result = StatsForecast(models=[self.make()], freq=1, n_jobs=-1).forecast(
+            h=horizon, df=frame, level=list(self.INTERVALS))
+        result = result.sort_values(["unique_id", "ds"])
+        name = [c for c in result.columns if c not in ("unique_id", "ds") and "-lo-" not in c and "-hi-" not in c][0]
+        rows = len(filled)
+
+        def column(col: str) -> np.ndarray:
+            return result[col].to_numpy(dtype=float).reshape(rows, horizon)
+
+        by_level = {0.5: column(name)}
+        for level in self.INTERVALS:
+            low = round((100 - level) / 200, 3)
+            by_level[low] = column(f"{name}-lo-{level}")
+            by_level[round(1 - low, 3)] = column(f"{name}-hi-{level}")
+        quantiles = np.stack([by_level[q] for q in self.levels], axis=-1)
+        # The intervals are symmetric around the point forecast, so the mean is the median.
+        return RawForecast(self.levels, quantiles, by_level[0.5])
+
+
 def load_forecaster(name: str = DEFAULT_MODEL, device: str = "cpu") -> Model:
     model_id = MODELS.get(name, name)
     lowered = model_id.lower()
+    if lowered.startswith("statsforecast:"):
+        return StatsBaseline(model_id)
     kind = Chronos2Model if "chronos" in lowered else TimesFM3Model if "timesfm" in lowered else TimestralModel
     return kind(model_id, device)
 
@@ -212,7 +280,7 @@ def rolling(
     known: pd.DataFrame | None = None,
     low: float = 0.01,
     high: float = 0.99,
-    batch_size: int = 64,
+    batch_size: int | None = None,
 ) -> QuantileForecast:
     """Forecast `start`..`end` in blocks of `horizon` hours, each block only from earlier hours.
 
@@ -245,6 +313,7 @@ def rolling(
 
     wanted = [low, 0.5, high, *DECILES]
     quantiles = []
+    batch_size = batch_size or model.batch_size
     for first in range(0, len(contexts), batch_size):
         batch = slice(first, first + batch_size)
         result = model.predict(contexts[batch], gap + horizon, None if covariate is None else covariate[batch])

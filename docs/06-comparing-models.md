@@ -1,7 +1,9 @@
-# Comparing models: Timestral, Chronos-2 and TimesFM 3
+# Comparing models: three TSFMs and three classical baselines
 
-This note compares three open-weight time series foundation models on the same data, with
-the same procedure, and says which one is better at forecasting and at anomaly detection.
+This note compares three open-weight time series foundation models (Timestral, Chronos-2
+and TimesFM 3) and three classical baselines (seasonal naive, ETS and MSTL) on the same
+data, with the same procedure. It says which model is better at forecasting and at
+anomaly detection, and it tests whether the differences are real or can be chance.
 
 To get all the numbers and charts in this note:
 
@@ -9,9 +11,9 @@ To get all the numbers and charts in this note:
 uv run main.py compare
 ```
 
-The command runs each model on the CPU (about 5 minutes for the three). It writes
+The command runs each model on the CPU (about 10 minutes for the six). It writes
 `output/compare-summary.csv`, `output/compare-forecasting.csv`,
-`output/compare-anomalies.csv` and three charts. It also writes the usual `forecast` and
+`output/compare-significance.csv`, `output/compare-anomalies.csv` and four charts. It also writes the usual `forecast` and
 `anomalies` files for each model. The files of a model other than Timestral get the
 name of the model as a suffix, for example `output/forecast-timesfm-3.png`.
 
@@ -21,7 +23,8 @@ name of the model as a suffix, for example `output/forecast-timesfm-3.png`.
   WQL, coverage, width, tail calibration
 - [Summary: which model is better](#summary-which-model-is-better)
 - [1. Forecasting](#1-forecasting)
-- [2. Anomaly detection](#2-anomaly-detection)
+- [2. Is the difference real?](#2-is-the-difference-real)
+- [3. Anomaly detection](#3-anomaly-detection)
 - [Models that we did not add](#models-that-we-did-not-add)
 - [Limits of this comparison](#limits-of-this-comparison)
 
@@ -42,8 +45,28 @@ The important difference is the quantile levels. TimesFM 3 gives only 10% to 90%
 has no 1% and no 99% quantile, so it cannot do this project's anomaly check, which
 uses the 1%-99% range. We score TimesFM 3 on forecasting only.
 
+### The classical baselines
+
+A TSFM is useful only if it is better than the simpler methods that already exist. Thus
+the comparison also has three classical models from the
+[statsforecast](https://github.com/Nixtla/statsforecast) library (Nixtla). For how they
+work, see [01-concepts.md](01-concepts.md#strong-baselines-ets-and-mstl).
+
+| | Seasonal naive | ETS | MSTL |
+|---|---|---|---|
+| Method | each hour = the same hour one week earlier | exponential smoothing; AutoETS selects the form, with a daily cycle or without a cycle | daily and weekly cycles removed with STL, the rest forecast with ETS |
+| Cycles that it knows | weekly (it copies a whole week) | daily at most (here, usually none) | daily and weekly |
+| Range | from the past week-to-week changes | from its own error model | from its own error model |
+| Holidays | no | no | no |
+| Command-line name | `seasonal-naive` | `ets` | `mstl` |
+
+The baselines are different from the TSFMs in two ways. They are **fitted again on each
+12-week history** (they learn only from this data), and they **do not get the holiday
+indicator**, because they have no input for it. Their ranges give all the levels that
+the scores need (1%, 5%, 10%, ..., 90%, 95%, 99%), so they can also do the anomaly check.
+
 In the code, each model is one class in `forecasting.py` (`TimestralModel`,
-`Chronos2Model`, `TimesFM3Model`). Each class changes the project's arrays into the
+`Chronos2Model`, `TimesFM3Model`, and `StatsBaseline` for the three baselines). Each class changes the project's arrays into the
 input format of its library, and changes the result back into the same `RawForecast`.
 The rest of the code does not know which model it uses. To add a model, you add one
 class.
@@ -57,13 +80,15 @@ A comparison is fair only if the models get exactly the same task. Thus every mo
 - the same data: hourly demand of the same five countries;
 - the same history for each forecast: the 2,048 hours (about 12 weeks) before it;
 - the same extra input: a 0/1 public-holiday indicator for each country, for the history
-  and for the hours that it forecasts;
+  and for the hours that it forecasts (the TSFMs only; the baselines cannot use it);
 - the same forecasts to make: one forecast for each week from 30 September 2019 to
   27 September 2020, for each country (52 weeks × 5 countries = 260 forecasts);
 - the same scores, calculated by the same code.
 
-No model is trained or adjusted on this data. All three are used zero-shot, with the
-default settings of their libraries.
+No TSFM is trained or adjusted on this data: all three are used zero-shot, with the
+default settings of their libraries. The baselines are fitted on each history, also with
+default settings. The settings were not changed after we saw the results (for ETS, we
+tested other settings and report them in section 1, but kept the first one).
 
 ### Step 1: forecast the past without looking at it
 
@@ -119,12 +144,12 @@ by the total demand. A model gets a low WQL only if its median is near the actua
 actual value goes outside it. A range that is too wide is punished on every hour. WQL is
 the standard score of the public benchmarks for these models (for example GIFT-Eval and
 fev-bench), and it is an approximation of the CRPS (continuous ranked probability
-score). We use the deciles because all three models give them, so the score is the same
+score). We use the deciles because all six models give them, so the score is the same
 for all.
 
-**The baseline.** A score has meaning only in comparison with a simple method. Our
-baseline is "same hour last week": each hour is the same as one week earlier. A useful
-model must have a lower MAPE than this baseline.
+**The baselines.** A score has meaning only in comparison with simpler methods. The
+weakest is seasonal naive ("same hour last week"); MSTL is the strongest of the three. A
+useful TSFM must be better than all of them.
 
 ### Step 3: score the anomaly detection
 
@@ -150,12 +175,32 @@ The lockdowns are the only events in the data that we know are real anomalies. B
 are only five, and they are not independent: they all occurred within two weeks. Thus
 these scores are a check, not the main score.
 
-### Step 4: one winner for each row
+### Step 4: test whether a difference is real
+
+Two models with a WQL of 3.18% and 3.21% can be equally good: with other weeks, the order
+could change. Thus we test each pair of models with a **paired comparison**: both models
+forecast the same weeks, so we compare them week by week.
+
+- **Win counts:** in how many of the 22 usual weeks (and of the 110 country-weeks) model
+  A has the lower WQL than model B.
+- **The Diebold–Mariano test:** for each week, the difference in WQL between the two
+  models (mean of the 5 countries). If the models are equally good, the mean difference
+  is 0. The test gives a **p-value**: the probability of a difference at least this large
+  if the models were equally good. With 6 models there are 15 pairs, so the p-values are
+  adjusted with the Holm method. A difference is "real" when the adjusted p-value is
+  below 0.05.
+
+For the idea behind paired tests and the Diebold–Mariano test, with an example, see
+[01-concepts.md](01-concepts.md#is-a-difference-real-paired-comparisons). The code is
+`evaluation.py`.
+
+### Step 5: one winner for each row
 
 The summary table has one row for each score and one column for each model. For each
 row, the "better" column names the model with the best value, by the rule of that row
 (lowest, highest or nearest to the target). The winner of each section is the winner of
-its main score. The other rows explain why.
+its main score. The other rows explain why. One more row says whether the WQL winner is
+clearly better than the second model (Step 4).
 
 ## The scores, explained
 
@@ -210,7 +255,7 @@ A MAPE of 4% has no meaning alone: is that good or bad for this data? Thus we co
 with a **baseline**, a simple method that any useful model must beat. Our baseline is
 **"same hour last week"**: the forecast for Tuesday 10:00 is the actual demand of the
 Tuesday before at 10:00. This method already knows the daily and the weekly cycle. It
-has a MAPE of 6.0% on our data. All three models have 4.2-4.4%, so all three are useful.
+has a MAPE of 6.0% on our data. The three TSFMs have 4.2-4.4%, so all three are useful.
 
 ### Pinball loss: the score for one quantile
 
@@ -248,7 +293,7 @@ WQL = 2 × (sum of the pinball losses of all quantiles, over all hours)
           (number of quantiles) × (sum of the actual values)
 ```
 
-This project uses the 9 deciles (10%, 20%, ..., 90%), because all three models give
+This project uses the 9 deciles (10%, 20%, ..., 90%), because all six models give
 them. The factor 2 changes the half in the pinball loss back to a full error. Thus, for
 the median alone, WQL is the same as the absolute error in %: a difference of 1,000 MW at
 50,000 MW gives a WQL of 2 × 500 / 50,000 = 2%, and a MAPE of 2%. With all the quantiles,
@@ -335,31 +380,36 @@ forecasting, but worse in anomaly detection.
 
 From `output/compare-summary.csv`:
 
-| Section | Criterion | Timestral | Chronos-2 | TimesFM 3 | Last week (baseline) | Better |
-|---|---|---|---|---|---|---|
-| forecasting | **WQL %** (main score, lower is better) | 3.21 | 3.33 | **3.18** | | TimesFM 3 |
-| forecasting | MAPE % of the median (lower is better) | 4.24 | 4.38 | **4.19** | 6.02 | TimesFM 3 |
-| forecasting | hours in the 80% range (best: 80) | **81.1** | 77.1 | 76.7 | | Timestral |
-| forecasting | width of the 80% range % (lower is better) | 13.95 | 13.07 | **12.29** | | TimesFM 3 |
-| cost | seconds for the 260 week-ahead forecasts (CPU) | 100 | **26** | 44 | | Chronos-2 |
-| anomalies | **hours outside 1%-99% before the pandemic %** (main score, best: 2) | **1.8** | 3.1 | not possible | | Timestral |
-| anomalies | anomalous days before the pandemic (fewer = fewer false alerts) | **20** | 35 | not possible | | Timestral |
-| anomalies | lockdown days found, first 14 days (more is better) | **6** | 5 | not possible | | Timestral |
-| anomalies | lockdowns found, of 5 countries (more is better) | **4** | 3 | not possible | | Timestral |
+| Section | Criterion | Timestral | Chronos-2 | TimesFM 3 | Seasonal naive | ETS | MSTL | Better |
+|---|---|---|---|---|---|---|---|---|
+| forecasting | **WQL %** (main score, lower is better) | 3.21 | 3.33 | **3.18** | 5.09 | 16.07 | 4.83 | TimesFM 3 |
+| forecasting | MAPE % of the median (lower is better) | 4.24 | 4.38 | **4.19** | 6.02 | 17.75 | 5.47 | TimesFM 3 |
+| forecasting | hours in the 80% range (best: 80) | **81.1** | 77.1 | 76.7 | 83.1 | 78.2 | 89.8 | Timestral |
+| forecasting | width of the 80% range % (lower is better) | 13.95 | 13.07 | **12.29** | 22.44 | 89.53 | 29.34 | TimesFM 3 |
+| forecasting | is the WQL winner clearly better than the second? (Diebold–Mariano) | second | | best | | | | **no clear winner** (p = 0.91) |
+| cost | seconds for the 260 week-ahead forecasts (CPU) | 167 | 40 | 50 | **4** | 113 | 37 | Seasonal naive |
+| anomalies | **hours outside 1%-99% before the pandemic %** (main score, best: 2) | **1.8** | 3.1 | not possible | 5.9 | 5.1 | 3.8 | Timestral |
+| anomalies | anomalous days before the pandemic (fewer = fewer false alerts) | **20** | 35 | not possible | 62 | 72 | 38 | Timestral |
+| anomalies | lockdown days found, first 14 days (more is better) | 6 | 5 | not possible | 6 | 1 | **7** | MSTL |
+| anomalies | lockdowns found, of 5 countries (more is better) | **4** | 3 | not possible | 3 | 1 | 3 | Timestral |
 
-**Forecasting: TimesFM 3 is first, but by a very small margin.** Its WQL is 3.18%, and
-Timestral's is 3.21%: a difference of 1%. TimesFM 3 is better in four countries, and
-Timestral is much better in France. We did not do a test of statistical significance.
-With a difference this small, we think that TimesFM 3 and Timestral are equal, and that
-Chronos-2 is a little worse. All three are much better than the baseline (MAPE 4.2-4.4%,
-against 6.0%).
+**Forecasting: the three TSFMs are equal, and all three are clearly better than the
+baselines.** TimesFM 3 has the lowest WQL (3.18%), but the Diebold–Mariano test finds no
+clear difference from Timestral (3.21%, adjusted p = 0.91) or Chronos-2 (3.33%, adjusted
+p = 0.91). Timestral even has the lower WQL in 14 of the 22 weeks: TimesFM 3's lead comes
+mostly from the week of Christmas (see [section 2](#2-is-the-difference-real)). All three
+TSFMs are clearly better than every baseline (adjusted p ≤ 0.004): their WQL is about a
+third lower than that of MSTL, the best baseline.
 
 **Anomaly detection: Timestral is better.** Its 1%-99% range is the most honest (1.8% of
-usual hours outside it, target 2%). Thus it sends the fewest alerts on usual days, and it
-also found the most lockdown days. Chronos-2's range is too narrow (3.1%), so it sends
-75% more alerts on usual days. TimesFM 3 cannot do this check.
+usual hours outside it, target 2%). Thus it sends the fewest alerts on usual days (20).
+Chronos-2's range is too narrow (3.1%, 35 alerts), and the baselines' ranges are worse
+(3.8-5.9%, 38-72 alerts). MSTL found one more lockdown day than Timestral (7 against 6),
+but with almost twice as many alerts on usual days. TimesFM 3 cannot do this check.
 
-**Speed: Chronos-2 is the fastest**, about 4 times faster than Timestral on a CPU.
+**Speed: seasonal naive is the fastest** (it only copies the last week), and of the TSFMs,
+Chronos-2 is the fastest. The times change between runs: in an earlier run, Timestral took
+100 seconds, not 167.
 
 ## 1. Forecasting
 
@@ -368,42 +418,62 @@ values are in `output/compare-forecasting.csv`.
 
 **WQL %** (lower is better):
 
-| Country | Timestral | Chronos-2 | TimesFM 3 |
-|---|---|---|---|
-| Germany | 2.76 | 2.77 | **2.50** |
-| France | **3.86** | 3.98 | 4.31 |
-| Italy | 2.89 | 3.18 | **2.61** |
-| Spain | 2.45 | 2.55 | **2.42** |
-| Great Britain | 4.12 | 4.17 | **4.06** |
-| **Mean** | 3.21 | 3.33 | **3.18** |
+| Country | Timestral | Chronos-2 | TimesFM 3 | Seasonal naive | ETS | MSTL |
+|---|---|---|---|---|---|---|
+| Germany | 2.76 | 2.77 | **2.50** | 4.40 | 19.23 | 4.52 |
+| France | **3.86** | 3.98 | 4.31 | 5.88 | 9.45 | 4.24 |
+| Italy | 2.89 | 3.18 | **2.61** | 5.52 | 26.99 | 5.43 |
+| Spain | 2.45 | 2.55 | **2.42** | 4.45 | 16.45 | 4.06 |
+| Great Britain | 4.12 | 4.17 | **4.06** | 5.21 | 8.22 | 5.91 |
+| **Mean** | 3.21 | 3.33 | **3.18** | 5.09 | 16.07 | 4.83 |
 
 **MAPE %** (lower is better):
 
-| Country | Timestral | Chronos-2 | TimesFM 3 | Last week (baseline) |
-|---|---|---|---|---|
-| Germany | 3.71 | 3.64 | **3.25** | 5.00 |
-| France | **4.94** | 5.08 | 5.48 | 7.10 |
-| Italy | 3.76 | 4.11 | **3.40** | 5.75 |
-| Spain | 3.15 | 3.28 | **3.11** | 5.03 |
-| Great Britain | **5.63** | 5.76 | 5.69 | 7.22 |
-| **Mean** | 4.24 | 4.38 | **4.19** | 6.02 |
+| Country | Timestral | Chronos-2 | TimesFM 3 | Seasonal naive | ETS | MSTL |
+|---|---|---|---|---|---|---|
+| Germany | 3.71 | 3.64 | **3.25** | 5.00 | 21.21 | 5.20 |
+| France | **4.94** | 5.08 | 5.48 | 7.10 | 11.00 | 5.23 |
+| Italy | 3.76 | 4.11 | **3.40** | 5.75 | 28.79 | 5.79 |
+| Spain | 3.15 | 3.28 | **3.11** | 5.03 | 17.39 | 4.31 |
+| Great Britain | **5.63** | 5.76 | 5.69 | 7.22 | 10.36 | 6.82 |
+| **Mean** | 4.24 | 4.38 | **4.19** | 6.02 | 17.75 | 5.47 |
 
 **Hours in the 80% range** (best: 80) **and width of the range** (% of the demand):
 
-| Country | Timestral in range | Chronos-2 in range | TimesFM 3 in range | Timestral width | Chronos-2 width | TimesFM 3 width |
-|---|---|---|---|---|---|---|
-| Germany | 80.8 | 80.6 | 75.5 | 11.0 | 11.8 | 8.8 |
-| France | 78.8 | 75.0 | 71.5 | 16.0 | 14.8 | 15.6 |
-| Italy | 81.0 | 74.1 | 80.1 | 11.8 | 10.3 | 10.5 |
-| Spain | 82.5 | 77.7 | 75.6 | 10.2 | 9.4 | 8.8 |
-| Great Britain | 82.7 | 78.2 | 80.5 | 20.8 | 19.0 | 17.8 |
-| **Mean** | **81.1** | 77.1 | 76.7 | 14.0 | 13.1 | **12.3** |
+| Model | Hours in the 80% range | Width of the 80% range |
+|---|---|---|
+| Timestral | **81.1** | 14.0 |
+| Chronos-2 | 77.1 | 13.1 |
+| TimesFM 3 | 76.7 | **12.3** |
+| Seasonal naive | 83.1 | 22.4 |
+| ETS | 78.2 | 89.5 |
+| MSTL | 89.8 | 29.3 |
+
+The values for each country are in `output/compare-forecasting.csv`.
 
 What the numbers show:
 
-- **The medians are almost the same.** The chart below shows one usual week. The three
-  medians are almost on the same line, and they make the same errors. For example, in
-  France on 23 and 24 November 2019, all three models expected more demand than occurred.
+- **The TSFMs are much better than the baselines.** Their WQL is 3.2-3.3%; the best
+  baseline, MSTL, has 4.8%. The TSFMs know the daily and the weekly cycle, and the
+  holidays, from a 12-week history without any fitting. They are better in every country,
+  with one exception: in France, TimesFM 3 (4.31%) is a little worse than MSTL (4.24%).
+- **MSTL is the best baseline, but its range is too wide.** Its median is only a little
+  better than seasonal naive (MAPE 5.5% against 6.0%), and its WQL is a little better
+  (4.8% against 5.1%). But the test in section 2 finds no clear difference between the
+  two. Its 80% range contains 90% of the hours: it is too careful.
+- **ETS fails on this task.** AutoETS selects the form of ETS that fits each history best.
+  In 75 of the 110 country-weeks it selected ETS(A,N,N): no trend and **no cycle at all**.
+  Its forecast is then a flat line at the latest level (see the dashed pink line in the
+  chart below), and its range becomes wider with each hour ahead, until it is about as
+  wide as the demand itself (90%). We tested other forms on a sample of 20 windows: ETS
+  with a forced daily cycle (median error 13%, but only 46% of hours in its 80% range)
+  and ETS with a weekly cycle (14%), against 5% for MSTL. None is a useful baseline, so we
+  kept the default. This is the reason why methods such as MSTL exist: ETS alone cannot
+  model a daily and a weekly cycle together.
+- **The medians of the TSFMs are almost the same.** The chart below shows one usual
+  week. The TSFM medians are almost on the same line, and they make the same errors. For example, in
+  France on 23 and 24 November 2019, all three TSFMs expected more demand than occurred.
+  The dashed lines are the baselines.
 - **The ranges are different.** Timestral's 80% range contains 81% of the hours: it is
   honest. The ranges of Chronos-2 and TimesFM 3 contain only 77%: they are a little too
   narrow. TimesFM 3 has the narrowest range, but part of that precision is false: in
@@ -417,56 +487,124 @@ What the numbers show:
 ![compare-week](../output/compare-week.png)
 
 The next chart shows the forecast of each model for the 30 days after the end of the data
-(October 2020). There is no actual demand to compare with. The forecasts are similar,
-but not the same: for example, in France, Chronos-2 expects a lower demand at the end of
-October than the two other models.
+(October 2020). There is no actual demand to compare with. The TSFM forecasts are
+similar, but not the same: for example, in France, Chronos-2 expects a lower demand at the
+end of October than the two other TSFMs.
 
 ![compare-forecast](../output/compare-forecast.png)
 
-The forecast of each model, with its 80% range, is in `output/forecast.png` (Timestral),
-`output/forecast-chronos-2.png` and `output/forecast-timesfm-3.png`.
+The forecast of each model, with its 80% range, is in `output/forecast.png` (Timestral)
+and `output/forecast-<model>.png` for the other models, for example
+`output/forecast-mstl.png`.
 
-## 2. Anomaly detection
+## 2. Is the difference real?
 
-Only Timestral and Chronos-2: TimesFM 3 has no 1% and 99% quantile.
+The WQL values in section 1 are averages over 22 weeks. To know whether one model is
+really better than another, we compare them week by week on the same weeks (see [Step
+4](#step-4-test-whether-a-difference-is-real)).
+
+![compare-weekly](../output/compare-weekly.png)
+
+The chart shows the WQL of each week, for each model (mean of the five countries). Two
+things are clear:
+
+- **The WQL changes more from week to week than from model to model.** The week of
+  Christmas (from 23 December) has a WQL of 6-10% for the TSFMs and 13-16% for the
+  baselines; a usual week in October has 2-3%. Thus the averages alone cannot show a
+  small difference between models: they must be compared on the same weeks.
+- **The TSFMs go up and down together.** The three solid lines are almost on top of each
+  other, except in the weeks around Christmas.
+
+**TimesFM 3 (the lowest WQL) against each other model**, from
+`output/compare-significance.csv`:
+
+| Other model | WQL TimesFM 3 − other | Weeks TimesFM 3 better (of 22) | Country-weeks TimesFM 3 better (of 110) | DM statistic | p-value | p-value (Holm) | Verdict |
+|---|---|---|---|---|---|---|---|
+| Timestral | −0.08 | 8 | 52 | −0.36 | 0.72 | 0.91 | no clear difference |
+| Chronos-2 | −0.19 | 10 | 53 | −0.88 | 0.39 | 0.91 | no clear difference |
+| MSTL | −1.74 | 21 | 97 | −4.03 | 0.001 | 0.004 | TimesFM 3 is better |
+| Seasonal naive | −1.97 | 22 | 97 | −4.01 | 0.001 | 0.004 | TimesFM 3 is better |
+| ETS | −12.91 | 22 | 106 | −21.11 | < 0.001 | < 0.001 | TimesFM 3 is better |
+
+(The WQL differences here are means of the weekly WQL, so they are a little different from
+the differences of the WQL over all hours in section 1.)
+
+How to read the table:
+
+- **TimesFM 3 against Timestral: no clear difference.** TimesFM 3 has the lower WQL on
+  average, but Timestral is better in 14 of the 22 weeks. The p-value is 0.72: a
+  difference this large is very probable if the two models are equally good. The reason is
+  in the chart: in the week of Christmas, TimesFM 3 has a WQL of 6.2% and Timestral 9.7%.
+  This one week gives TimesFM 3 its lead. Without this week, Timestral has the lower
+  average (2.97% against 3.06%), and the difference is still not significant (p = 0.53).
+- **Timestral against Chronos-2: probably a small difference, but not proven.** The raw
+  p-value is 0.025, below 0.05. But after the Holm adjustment for 15 pairs, it is 0.10.
+  Thus Timestral is probably a little better than Chronos-2, but these 22 weeks do not
+  prove it.
+- **Every TSFM against every baseline: a real difference.** TimesFM 3 is better than MSTL
+  in 21 of 22 weeks and better than seasonal naive in all 22, with adjusted p-values of
+  0.004. Timestral and Chronos-2 give the same result against the baselines: all nine
+  pairs "TSFM against baseline" are clear differences (all 15 pairs are in
+  `output/compare-significance.csv`).
+- **MSTL against seasonal naive: no clear difference** (adjusted p = 0.91). The
+  stronger classical method is not clearly better than copying last week here.
+
+**Conclusion:** on this data, "which TSFM forecasts better" has no clear answer. The
+choice between them must use other criteria: the anomaly check (section 3), the speed, or
+the licence. "TSFM or classical baseline" has a clear answer: the TSFMs.
+
+## 3. Anomaly detection
+
+TimesFM 3 is not in this section: it has no 1% and 99% quantile. The three baselines are,
+because their ranges give these levels.
 
 **Percentage of hours outside the lines**, from 30 September 2019 to 29 February 2020
 (target: 1% in each column):
 
-| Country | Timestral below 1% | Timestral above 99% | Chronos-2 below 1% | Chronos-2 above 99% |
-|---|---|---|---|---|
-| Germany | 2.0 | 0.0 | 2.0 | 0.3 |
-| France | 0.1 | 1.2 | 0.8 | 2.9 |
-| Italy | 2.1 | 0.9 | 3.2 | 2.7 |
-| Spain | 1.1 | 0.6 | 2.0 | 0.6 |
-| Great Britain | 0.8 | 0.2 | 0.7 | 0.2 |
-| **Mean** | **1.2** | **0.6** | 1.7 | 1.3 |
+| Model | Below 1% | Above 99% | Total (target 2) |
+|---|---|---|---|
+| Timestral | 1.2 | 0.6 | **1.8** |
+| Chronos-2 | 1.7 | 1.3 | 3.1 |
+| Seasonal naive | 2.7 | 3.1 | 5.9 |
+| ETS | 0.2 | 5.0 | 5.1 |
+| MSTL | 3.2 | 0.6 | 3.8 |
+
+The values for each country are printed by `main.py compare`. ETS has almost no hours
+below its 1% line, but 5% above its 99% line: its range is in the wrong place, not only too
+narrow. MSTL has the opposite problem: too many hours below its 1% line.
 
 **Anomalous days** (6 or more hours outside the 1%-99% range), the full year:
 
-| Country | Timestral | Chronos-2 | Both models |
-|---|---|---|---|
-| Germany | 4 | 8 | 4 |
-| France | 12 | 18 | 11 |
-| Italy | 25 | 37 | 22 |
-| Spain | 7 | 13 | 5 |
-| Great Britain | 4 | 4 | 3 |
-| **Total** | **52** | **80** | **45** |
+| Country | Timestral | Chronos-2 | Seasonal naive | ETS | MSTL |
+|---|---|---|---|---|---|
+| Germany | 4 | 8 | 29 | 43 | 19 |
+| France | 12 | 18 | 20 | 54 | 16 |
+| Italy | 25 | 37 | 30 | 33 | 40 |
+| Spain | 7 | 13 | 31 | 37 | 19 |
+| Great Britain | 4 | 4 | 13 | 11 | 4 |
+| **Total** | **52** | **80** | **123** | **178** | **98** |
 
 ![compare-anomalies](../output/compare-anomalies.png)
 
 Each mark is one anomalous day. The two shaded periods tell you what a mark means:
 
 - **Grey area: the usual days before the pandemic** (to 29 February 2020). A mark there is
-  a holiday or a false alert, so fewer marks is better. This is where the narrow tails of
-  Chronos-2 show: it has 35 marks in the grey area, and Timestral has 20.
+  a holiday or a false alert, so fewer marks is better. Timestral has 20 marks in the grey
+  area, Chronos-2 35, MSTL 38, seasonal naive 62 and ETS 72.
 - **Red area: the first 14 days of each lockdown.** A mark there is a hit, so more marks is
-  better. Timestral has 6, Chronos-2 has 5.
+  better. MSTL has 7, Timestral and seasonal naive 6, Chronos-2 5 and ETS 1.
 - The label of each row gives these two counts for that model and country, for example
   "16 usual · 1 lockdown" for Chronos-2 in Italy.
 
 The anomaly chart of each model, with the daily energy, is in `output/anomalies-168h.png`
-(Timestral) and `output/anomalies-168h-chronos-2.png`.
+(Timestral) and `output/anomalies-168h-<model>.png` for the other models.
+
+- **ETS flags almost every Monday** in Germany and Italy: the regular row of marks, all
+  of them "spikes". Each forecast is made at Sunday midnight. A flat forecast continues
+  the low level of Sunday night, so the usual Monday demand is far above its range. This
+  is the same weakness as in section 1.
+- **Seasonal naive copies last week, with its accidents.** When the last week had a
+  holiday, the next week looks wrong. Thus it flags many usual days.
 
 - **Chronos-2 finds almost all the days that Timestral finds** (45 of 52). Both models
   find the main events: the start of the lockdowns, the reopening of France in May 2020,
@@ -479,16 +617,18 @@ The anomaly chart of each model, with the daily energy, is in `output/anomalies-
 
 **The lockdowns:** anomalous days in the first 14 days, and the first such day:
 
-| Country | Lockdown starts | Timestral days | Timestral first | Chronos-2 days | Chronos-2 first |
-|---|---|---|---|---|---|
-| Italy | 10 March | 3 | 13 March | 1 | 15 March |
-| Spain | 15 March | 1 | 19 March | 1 | 19 March |
-| France | 17 March | 1 | 19 March | 3 | 18 March |
-| Germany | 22 March | 0 | - | 0 | - |
-| Great Britain | 23 March | 1 | 26 March | 0 | - |
+| Country | Lockdown starts | Timestral | Chronos-2 | Seasonal naive | ETS | MSTL |
+|---|---|---|---|---|---|---|
+| Italy | 10 March | 3 (from 13 March) | 1 (15 March) | 0 | 0 | 1 (16 March) |
+| Spain | 15 March | 1 (19 March) | 1 (19 March) | 1 (19 March) | 0 | 0 |
+| France | 17 March | 1 (19 March) | 3 (from 18 March) | 1 (20 March) | 1 (30 March) | 5 (from 18 March) |
+| Germany | 22 March | 0 | 0 | 0 | 0 | 1 (23 March) |
+| Great Britain | 23 March | 1 (26 March) | 0 | 4 (from 25 March) | 0 | 0 |
 
-Timestral found more days in Italy and found Great Britain. Chronos-2 found more days in
-France. Neither found Germany, where the decrease was small. Both models find only the
+Timestral found more days in Italy, where the lockdown came first. MSTL found the most days
+in France and the only day in Germany; seasonal naive found the most days in Great
+Britain. But both baselines also send two to three times as many alerts on usual days, so
+a lockdown alert from them is less informative. Both models find only the
 first days of each lockdown, because of the procedure: after one week, the lockdown is in
 the history, and the models expect the low demand. See
 [04-anomaly-detection.md](04-anomaly-detection.md).
@@ -510,8 +650,11 @@ comparison:
   on other data.
 - Each model has default settings, a 2,048-hour history and the holiday covariate. We
   did not try other settings.
-- The forecasting difference between TimesFM 3 and Timestral is very small, and we did not
-  test it for statistical significance.
+- There are only 22 usual weeks. The test finds no clear difference between the TSFMs,
+  but more weeks or more series could show a small difference.
+- The baselines do not get the holiday indicator, and they use default settings. A
+  baseline with holidays (for example, a regression with calendar features) would be
+  stronger.
 - WQL uses only the deciles. Timestral and Chronos-2 also give the 1%, 5%, 95% and 99%
   quantiles, and WQL does not score them. The anomaly scores do.
 - The times are from one laptop CPU (MacBook Air M1). On a GPU, the times are different.

@@ -115,11 +115,11 @@ gets one holiday value (0 or 1) for each of these hours.
 |---|---|---|---|---|
 | `main.py forecast` | Forecasts the next 30 days for 5 countries | 5 forecasts, each from 32,768 hours: 163,840 values | 3,600 hours (720 × 5) | 42 s |
 | `main.py anomalies` | Makes one year of week-ahead forecasts for 5 countries | 260 forecasts, each from 2,048 hours: 532,480 values | 43,680 hours (8,736 × 5) | 96 s |
-| `main.py compare` | Does `forecast` and `anomalies` with each of the 3 models | 3 × the two rows above | 3 × the two rows above | about 5 min |
+| `main.py compare` | Does `forecast` and `anomalies` with each of the 6 models | 6 × the two rows above | 6 × the two rows above | about 10 min |
 
 ## The functions of a TSFM
 
-This project uses the same model in three different ways. Then it compares three models.
+This project uses the same model in three different ways. Then it compares six models.
 
 ### 1. Forecast
 
@@ -198,48 +198,86 @@ alerts.
 
 ### 4. Compare models
 
-`uv run main.py compare` does steps 1-3 again with three open-weight TSFMs: Timestral
-(Mistral), [Chronos-2](https://huggingface.co/amazon/chronos-2) (Amazon) and
-[TimesFM 3](https://huggingface.co/google/timesfm-3.0-pytorch) (Google). Each model gets
-the same data, the same 260 week-ahead forecasts to make and the same scores. Then a
-summary table names the better model for each score.
+`uv run main.py compare` does steps 1-3 again with six models, and scores them in the same
+way:
 
-| Section | Criterion | Timestral | Chronos-2 | TimesFM 3 | Better |
-|---|---|---|---|---|---|
-| forecasting | **Quantile loss (WQL) %**, main score, lower is better | 3.21 | 3.33 | **3.18** | TimesFM 3 |
-| forecasting | Error of the median (MAPE) %; "last week" gets 6.02 | 4.24 | 4.38 | **4.19** | TimesFM 3 |
-| forecasting | Hours in the 80% range, best: 80 | **81.1** | 77.1 | 76.7 | Timestral |
-| cost | Seconds for the 260 forecasts on a CPU | 100 | **26** | 44 | Chronos-2 |
-| anomalies | **Hours outside 1%-99% before the pandemic %**, main score, best: 2 | **1.8** | 3.1 | not possible | Timestral |
-| anomalies | Anomalous days before the pandemic, fewer is better | **20** | 35 | not possible | Timestral |
-| anomalies | Lockdown days found in the first 14 days, more is better | **6** | 5 | not possible | Timestral |
+- **Three open-weight TSFMs:** Timestral (Mistral),
+  [Chronos-2](https://huggingface.co/amazon/chronos-2) (Amazon) and
+  [TimesFM 3](https://huggingface.co/google/timesfm-3.0-pytorch) (Google). They are used
+  zero-shot.
+- **Three classical baselines** from [statsforecast](https://github.com/Nixtla/statsforecast):
+  *seasonal naive* (copy last week), *ETS* (exponential smoothing) and
+  *MSTL* (remove the daily and weekly cycles, forecast the rest). They are fitted again on
+  each 12-week history. A TSFM is useful only if it is better than these simpler methods.
 
-- **Forecasting:** the three models are almost equal. TimesFM 3 has the best score, but
-  the difference from Timestral is only 1%. All three are much better than "same hour
-  last week".
-- **Anomaly detection:** Timestral is better. Its 1%-99% range is the most correct, so
-  it sends the fewest false alerts. The range of Chronos-2 is too narrow, so Chronos-2
-  sends 75% more alerts on usual days. TimesFM 3 gives only the 10%-90% range, so it
-  cannot do this check.
+Each model gets the same data and the same 260 week-ahead forecasts to make. Then a summary
+table names the better model for each score.
 
-The chart shows each day that Timestral and Chronos-2 flagged as anomalous, one mark for
-each day. TimesFM 3 is not in it. How to read it:
+| Section | Criterion | Timestral | Chronos-2 | TimesFM 3 | Seasonal naive | ETS | MSTL | Better |
+|---|---|---|---|---|---|---|---|---|
+| forecasting | **Quantile loss (WQL) %**, main score, lower is better | 3.21 | 3.33 | **3.18** | 5.09 | 16.07 | 4.83 | TimesFM 3 |
+| forecasting | Error of the median (MAPE) % | 4.24 | 4.38 | **4.19** | 6.02 | 17.75 | 5.47 | TimesFM 3 |
+| forecasting | Hours in the 80% range, best: 80 | **81.1** | 77.1 | 76.7 | 83.1 | 78.2 | 89.8 | Timestral |
+| forecasting | Is the WQL winner clearly better than the second? | | | | | | | **no** (p = 0.91) |
+| cost | Seconds for the 260 forecasts on a CPU | 167 | 40 | 50 | **4** | 113 | 37 | Seasonal naive |
+| anomalies | **Hours outside 1%-99% before the pandemic %**, main score, best: 2 | **1.8** | 3.1 | not possible | 5.9 | 5.1 | 3.8 | Timestral |
+| anomalies | Anomalous days before the pandemic, fewer is better | **20** | 35 | not possible | 62 | 72 | 38 | Timestral |
+| anomalies | Lockdown days found in the first 14 days, more is better | 6 | 5 | not possible | 6 | 1 | **7** | MSTL |
+
+- **Forecasting:** the three TSFMs are clearly better than all the baselines. Their
+  error is about a third lower than that of MSTL, the best baseline. But among the TSFMs
+  there is no clear winner: TimesFM 3 has the best average, and the test below shows that
+  this can be chance.
+- **Anomaly detection:** Timestral is better. Its 1%-99% range is the most correct, so it
+  sends the fewest false alerts. Chronos-2 and the baselines have ranges that are too
+  narrow or in the wrong place, so they send 1.75 to 3.6 times as many alerts on usual
+  days. MSTL found one more lockdown day, but with almost twice as many false alerts.
+  TimesFM 3 gives only the 10%-90% range, so it cannot do this check.
+
+#### Is a difference real?
+
+TimesFM 3 has a quantile loss of 3.18%, and Timestral 3.21%. With other weeks, the order
+could change. To find out, we compare the two models **week by week**, on the same 22
+usual weeks. This is a *paired comparison*, and the *Diebold–Mariano test* gives a
+*p-value*: the probability of a difference this large if the two models were equally
+good. A p-value below 0.05 means that the difference is probably real.
+
+![compare-weekly](output/compare-weekly.png)
+
+- Hard weeks are hard for every model: the week of Christmas has a loss 3-5 times larger
+  than a usual week. Thus the averages alone cannot show which model is better.
+- **TimesFM 3 against Timestral: no clear difference** (p = 0.72; 0.91 after a correction
+  for testing 15 pairs). Timestral is better in 14 of the 22 weeks. TimesFM 3's lead comes
+  from one week, Christmas.
+- **Every TSFM against every baseline: a real difference** (p ≤ 0.004). For example,
+  TimesFM 3 is better than MSTL in 21 of 22 weeks.
+
+Thus "TSFM or classical method?" has a clear answer here: the TSFM. "Which TSFM?" has no
+clear answer for forecasting. Use the other results to choose, for example the anomaly
+check or the speed.
+
+#### Anomalous days
+
+The chart shows each day that a model flagged as anomalous, one mark for each day.
+TimesFM 3 is not in it. How to read it:
 
 - **The grey area is usual days** (before the pandemic). A mark there is a holiday or a
-  false alert. Chronos-2 has more marks in the grey area, for example in Italy in
-  November and January.
+  false alert. For example, ETS has a mark almost every Monday in Germany and Italy: it
+  usually makes a flat forecast from the low level of Sunday night, so each Monday looks
+  like a spike.
 - **The red area is the first two weeks of each lockdown.** A mark there is a hit: the
   model found the lockdown.
 - **The labels on the left give the counts** for each model and country: marks in the
-  grey area ("usual") and in the red area ("lockdown"). In total, Timestral has 20 usual
-  and 6 lockdown, and Chronos-2 has 35 usual and 5 lockdown.
+  grey area ("usual") and in the red area ("lockdown").
 - The marks after the red area (for example in May and August) are later events, such as
-  the reopening of France and the August closures. Both models find most of them.
+  the reopening of France and the August closures.
 
 ![compare-anomalies](output/compare-anomalies.png)
 
-For how we score the models, and for all the results, see
-[docs/06-comparing-models.md](docs/06-comparing-models.md).
+For how we score the models, the test and all the results, see
+[docs/06-comparing-models.md](docs/06-comparing-models.md). For the ideas behind the
+baselines and the paired test, see
+[docs/01-concepts.md](docs/01-concepts.md#strong-baselines-ets-and-mstl).
 
 For books, papers, benchmarks and tools about this area, see
 [docs/07-further-reading.md](docs/07-further-reading.md).
@@ -274,14 +312,15 @@ do not give to it.
 ## Quick start
 
 ```sh
-uv sync                     # installs timestral from GitHub, chronos-forecasting, timesfm, pandas, matplotlib, holidays
+uv sync                     # installs timestral from GitHub, chronos-forecasting, timesfm, statsforecast, pandas, matplotlib, holidays
 uv run main.py signal       # the chart above: fixed threshold and moving average (no model)
 uv run main.py forecast
 uv run main.py anomalies
-uv run main.py compare      # steps 1-3 with Timestral, Chronos-2 and TimesFM 3, and the summary table
+uv run main.py compare      # steps 1-3 with 3 TSFMs and 3 baselines, the summary table and the paired test
 ```
 
-Add `--model chronos-2` or `--model timesfm-3` to a command to use a different model.
+Add `--model chronos-2`, `--model timesfm-3`, `--model mstl` (or `seasonal-naive`, `ets`) to
+a command to use a different model.
 
 The first run downloads the data (124 MB, into `data/`) and the model (837 MB, into the
 Hugging Face cache). Each command shows a summary and writes a CSV file or a chart to
