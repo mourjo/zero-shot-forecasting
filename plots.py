@@ -25,6 +25,7 @@ def model_color(label: str) -> str:
 ANOMALY = "#e34948"
 INK = "#52514e"
 GRID = "#e4e3df"
+USUAL_SHADE = "#efeee9"
 
 
 def _panels(series: list[str], title: str, unit: str):
@@ -119,33 +120,49 @@ def plot_anomalies(actual: pd.DataFrame, expected: pd.DataFrame, days: pd.DataFr
     _save(fig, axes, path)
 
 
-def plot_compare_anomalies(flags: pd.DataFrame, lockdowns: dict[str, str], path: Path):
-    """One panel per country: a row of marks for each model, one mark for each anomalous day."""
+def plot_compare_anomalies(flags: pd.DataFrame, lockdowns: dict[str, str], path: Path, normal_until: str,
+                           window_days: int):
+    """One panel per country: a row of marks for each model, one mark for each anomalous day.
+
+    Two shaded periods tell the reader what a mark means. Before `normal_until` the days
+    are usual, so a mark there is a holiday or a false alert: fewer is better. In the first
+    `window_days` of a lockdown the days are known anomalies, so a mark there is a hit.
+    """
     codes = list(flags["country"].unique())
     models = [c for c in flags.columns if c not in ("day", "country")]
-    colors = [model_color(m) for m in models]
-    fig, axes = plt.subplots(len(codes), 1, figsize=(11, (0.45 + 0.35 * len(models)) * len(codes) + 0.8), sharex=True,
+    first, last = flags["day"].min(), flags["day"].max()
+    normal_end = pd.Timestamp(normal_until, tz="UTC") + pd.Timedelta(days=1)
+    fig, axes = plt.subplots(len(codes), 1, figsize=(11, (0.55 + 0.4 * len(models)) * len(codes) + 1.6), sharex=True,
                              squeeze=False)
-    fig.suptitle("Anomalous days (6+ hours outside the 1%-99% week-ahead range), by model", x=0.01, ha="left",
-                 fontsize=13, color="#0b0b0b")
+    fig.text(0.01, 0.99, "Days that each model flagged as anomalous (one mark = one day)", ha="left", va="top",
+             fontsize=13, color="#0b0b0b")
+    fig.text(0.01, 0.955, "Grey area: usual days, so marks are holidays or false alerts (fewer is better).   "
+             "Red area: the first two weeks of a lockdown, so marks are hits (more is better).",
+             ha="left", va="top", fontsize=9, color=INK)
     for ax, code in zip(axes[:, 0], codes):
         part = flags[flags["country"] == code]
-        for row, (model, color) in enumerate(zip(models, colors)):
-            hits = part.loc[part[model], "day"]
-            ax.scatter(hits, [row] * len(hits), marker="|", s=110, linewidths=2, color=color,
-                       label=f"{model} ({len(hits)} days)")
+        ax.axvspan(first, normal_end, color=USUAL_SHADE, linewidth=0, zorder=0)
+        start = None
         if code in lockdowns:
-            ax.axvline(pd.Timestamp(lockdowns[code], tz="UTC"), color=INK, linewidth=0.8, linestyle=(0, (4, 3)))
-        ax.set_title(f"{country_name(code)}  (dashed line: lockdown starts)", loc="left", fontsize=10, color=INK)
-        ax.set_yticks(range(len(models)), models)
+            start = pd.Timestamp(lockdowns[code], tz="UTC")
+            ax.axvspan(start, start + pd.Timedelta(days=window_days), color=ANOMALY, alpha=0.16, linewidth=0, zorder=0)
+        labels = []
+        for row, model in enumerate(models):
+            hits = part.loc[part[model], "day"]
+            ax.scatter(hits, [row] * len(hits), marker="|", s=110, linewidths=2, color=model_color(model), zorder=2)
+            usual = int((hits < normal_end).sum())
+            caught = 0 if start is None else int(((hits >= start) & (hits < start + pd.Timedelta(days=window_days))).sum())
+            labels.append(f"{model}\n{usual} usual · {caught} lockdown")
+        ax.set_title(country_name(code), loc="left", fontsize=10, color=INK)
+        ax.set_yticks(range(len(models)), labels)
         ax.set_ylim(-0.7, len(models) - 0.3)
+        ax.set_xlim(first, last + pd.Timedelta(days=1))
         ax.invert_yaxis()
         for side in ("top", "right", "left"):
             ax.spines[side].set_visible(False)
         ax.spines["bottom"].set_color(GRID)
         ax.tick_params(colors=INK, labelsize=8, length=0)
-        ax.legend(loc="lower right", frameon=False, fontsize=8, ncols=len(models), bbox_to_anchor=(1, 1))
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
     fig.savefig(path, dpi=130)
     plt.close(fig)
 

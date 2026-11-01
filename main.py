@@ -240,7 +240,7 @@ def run_compare(power, args: argparse.Namespace):
         flagged = flags[flags[finders].any(axis=1)]
         flagged.assign(day=flagged["day"].dt.strftime("%Y-%m-%d")).to_csv(OUTPUT / "compare-anomalies.csv",
                                                                           index=False)
-        plot_compare_anomalies(flags, LOCKDOWNS, OUTPUT / "compare-anomalies.png")
+        plot_compare_anomalies(flags, LOCKDOWNS, OUTPUT / "compare-anomalies.png", NORMAL_UNTIL, LOCKDOWN_WINDOW)
         lockdown = _lockdown_hits(flags, finders, load.columns)
 
         print(f"2. ANOMALY DETECTION: {args.start} .. {days[-1]:%Y-%m-%d}, {args.horizon} hours at a time; a day is "

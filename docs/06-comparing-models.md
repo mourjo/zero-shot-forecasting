@@ -455,8 +455,18 @@ Only Timestral and Chronos-2: TimesFM 3 has no 1% and 99% quantile.
 
 ![compare-anomalies](../output/compare-anomalies.png)
 
-Each mark is one anomalous day. The anomaly chart of each model is in
-`output/anomalies-168h.png` (Timestral) and `output/anomalies-168h-chronos-2.png`.
+Each mark is one anomalous day. The two shaded periods tell you what a mark means:
+
+- **Grey area: the usual days before the pandemic** (to 29 February 2020). A mark there is
+  a holiday or a false alert, so fewer marks is better. This is where the narrow tails of
+  Chronos-2 show: it has 35 marks in the grey area, and Timestral has 20.
+- **Red area: the first 14 days of each lockdown.** A mark there is a hit, so more marks is
+  better. Timestral has 6, Chronos-2 has 5.
+- The label of each row gives these two counts for that model and country, for example
+  "16 usual · 1 lockdown" for Chronos-2 in Italy.
+
+The anomaly chart of each model, with the daily energy, is in `output/anomalies-168h.png`
+(Timestral) and `output/anomalies-168h-chronos-2.png`.
 
 - **Chronos-2 finds almost all the days that Timestral finds** (45 of 52). Both models
   find the main events: the start of the lockdowns, the reopening of France in May 2020,
