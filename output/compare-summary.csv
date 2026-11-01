@@ -1,10 +1,11 @@
-section,criterion,Timestral,Chronos-2,TimesFM 3,last week (baseline),better
-forecasting,"WQL % (main score, lower is better)",3.21,3.33,3.18,,TimesFM 3
-forecasting,MAPE % of the median (lower is better),4.24,4.38,4.19,6.02,TimesFM 3
-forecasting,hours in the 80% range (best: 80),81.1,77.1,76.7,,Timestral
-forecasting,width of the 80% range % (lower is better),13.95,13.07,12.29,,TimesFM 3
-cost,seconds for all week-ahead forecasts (CPU),100,26,44,,Chronos-2
-anomalies,"hours outside 1%-99% before the pandemic % (main score, best: 2)",1.8,3.1,not possible,,Timestral
-anomalies,anomalous days before the pandemic (fewer = fewer false alerts),20,35,not possible,,Timestral
-anomalies,"lockdown days found, first 14 days (more is better)",6,5,not possible,,Timestral
-anomalies,"lockdowns found, of 5 countries (more is better)",4,3,not possible,,Timestral
+section,criterion,Timestral,Chronos-2,TimesFM 3,Seasonal naive,ETS,MSTL,better
+forecasting,"WQL % (main score, lower is better)",3.21,3.33,3.18,5.09,16.07,4.83,TimesFM 3
+forecasting,MAPE % of the median (lower is better),4.24,4.38,4.19,6.02,17.75,5.47,TimesFM 3
+forecasting,hours in the 80% range (best: 80),81.1,77.1,76.7,83.1,78.2,89.8,Timestral
+forecasting,width of the 80% range % (lower is better),13.95,13.07,12.29,22.44,89.53,29.34,TimesFM 3
+forecasting,is the WQL winner clearly better than the second? (Diebold–Mariano),second WQL,,best WQL,,,,no clear winner (p = 0.91)
+cost,seconds for all week-ahead forecasts (CPU),167,40,50,4,113,37,Seasonal naive
+anomalies,"hours outside 1%-99% before the pandemic % (main score, best: 2)",1.8,3.1,not possible,5.9,5.1,3.8,Timestral
+anomalies,anomalous days before the pandemic (fewer = fewer false alerts),20,35,not possible,62,72,38,Timestral
+anomalies,"lockdown days found, first 14 days (more is better)",6,5,not possible,6,1,7,MSTL
+anomalies,"lockdowns found, of 5 countries (more is better)",4,3,not possible,3,1,3,Timestral

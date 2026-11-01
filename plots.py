@@ -9,19 +9,23 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from data import country_name
-from forecasting import QuantileForecast
+from forecasting import BASELINES, QuantileForecast
 
 ACTUAL = "#2a78d6"
 FORECAST = "#eb6834"
 # One fixed colour per model, so that a model has the same colour in every chart.
-MODEL_COLORS = {"Timestral": "#eb6834", "Chronos-2": "#6250d6", "TimesFM 3": "#1baf7a"}
-SPARE_COLORS = ["#eda100", "#e87ba4"]
+# The classical baselines get the next colours and a dashed line, so that they stand apart.
+MODEL_COLORS = {"Timestral": "#eb6834", "Chronos-2": "#6250d6", "TimesFM 3": "#1baf7a",
+                "Seasonal naive": "#eda100", "ETS": "#e87ba4", "MSTL": "#008300"}
 
 
 def model_color(label: str) -> str:
-    if label not in MODEL_COLORS:
-        MODEL_COLORS[label] = SPARE_COLORS[len(MODEL_COLORS) - 3]
-    return MODEL_COLORS[label]
+    return MODEL_COLORS.get(label, INK)
+
+
+def model_style(label: str) -> dict:
+    """Line colour and dash for a model: solid for TSFMs, dashed for classical baselines."""
+    return {"color": model_color(label), "linestyle": (0, (4, 2)) if label in BASELINES else "-"}
 ANOMALY = "#e34948"
 INK = "#52514e"
 GRID = "#e4e3df"
@@ -176,7 +180,7 @@ def plot_compare_forecast(history: pd.DataFrame, forecasts: dict[str, QuantileFo
     for ax, code in zip(axes, history.columns):
         ax.plot(recent.index, recent[code], color=ACTUAL, linewidth=0.8, label="actual")
         for label, fc in forecasts.items():
-            ax.plot(fc.median.index, fc.median[code], color=model_color(label), linewidth=1, label=label)
+            ax.plot(fc.median.index, fc.median[code], linewidth=1, label=label, **model_style(label))
     _save(fig, axes, path)
 
 
@@ -189,5 +193,32 @@ def plot_compare_week(load: pd.DataFrame, forecasts: dict[str, QuantileForecast]
     for ax, code in zip(axes, load.columns):
         ax.plot(hours, load.loc[hours, code], color=ACTUAL, linewidth=1.6, label="actual")
         for label, fc in forecasts.items():
-            ax.plot(hours, fc.median.loc[hours, code], color=model_color(label), linewidth=1, label=f"{label} median")
+            ax.plot(hours, fc.median.loc[hours, code], linewidth=1, label=f"{label} median", **model_style(label))
     _save(fig, axes, path)
+
+
+def plot_compare_weekly(weekly: dict[str, pd.DataFrame], path: Path):
+    """WQL of every week for every model (mean over the countries), on the usual days.
+
+    It shows why the comparison must be paired: the WQL changes much more from one week to
+    the next than from one model to the next, but the models go up and down together.
+    """
+    fig, ax = plt.subplots(figsize=(11, 4.6))
+    fig.text(0.01, 0.98, "Weekly quantile loss (WQL) of each model, mean of the 5 countries", ha="left", va="top",
+             fontsize=13, color="#0b0b0b")
+    fig.text(0.01, 0.91, "Hard weeks (such as Christmas) are hard for every model. A fair comparison therefore "
+             "compares the models week by week: a paired test.", ha="left", va="top", fontsize=9, color=INK)
+    for label, frame in weekly.items():
+        pooled = frame.mean(axis=1)
+        ax.plot(pooled.index, pooled, linewidth=1.4, marker="o", markersize=3, label=label, **model_style(label))
+    ax.set_ylabel("WQL %", color=INK, fontsize=9)
+    ax.grid(axis="y", color=GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color(GRID)
+    ax.tick_params(colors=INK, labelsize=8, length=0)
+    ax.legend(loc="upper left", frameon=False, fontsize=8, ncols=3)
+    fig.tight_layout(rect=(0, 0, 1, 0.86))
+    fig.savefig(path, dpi=130)
+    plt.close(fig)

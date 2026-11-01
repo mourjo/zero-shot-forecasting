@@ -21,6 +21,7 @@ Related: [02-capabilities.md](02-capabilities.md) for a tour of what Timestral c
 - [Other details Timestral handles for you](#other-details-timestral-handles-for-you)
 - [Checking a forecast: backtesting](#checking-a-forecast-backtesting)
 - [Measuring error, and baselines](#measuring-error-and-baselines)
+- [Is a difference real? Paired comparisons](#is-a-difference-real-paired-comparisons)
 - [Calibration: can the ranges be trusted?](#calibration-can-the-ranges-be-trusted)
 - [Anomaly detection with a forecaster](#anomaly-detection-with-a-forecaster)
 - [What Timestral cannot do](#what-timestral-cannot-do)
@@ -481,6 +482,127 @@ In this project's week-ahead forecasts (October 2019 to February 2020), Timestra
 of the project also compared day-ahead forecasts with the grid operators' forecasts. The
 operators, who use weather forecasts, won in France, Italy and Spain.)
 
+### Strong baselines: ETS and MSTL
+
+"Last week" is a weak baseline: it copies one week, with all its accidents. A model that
+beats it is useful, but that is a low bar. Classical statistical methods are much stronger
+baselines. They are fast, they need no GPU, and they have been used for decades.
+`main.py compare` runs three of them, from the
+[statsforecast](https://github.com/Nixtla/statsforecast) library:
+
+- **Seasonal naive**: the same as "last week", but with a range. The range comes from
+  how large the week-to-week changes were in the history.
+- **ETS** (*error, trend, seasonality*), also called **exponential smoothing**: the
+  forecast is a weighted average of the past, in which recent values have more weight
+  than old values. ETS keeps three running estimates: the *level* (the current value
+  without the cycle), the *trend* (the slope) and the *seasonal* pattern (here, the shape
+  of a day: 24 values). AutoETS selects the form that fits the history best. Its weakness
+  here: ETS has only one cycle, so it cannot know the daily and the weekly pattern
+  together. On this data AutoETS often selects a form with no cycle at all, and then its
+  forecast is a flat line.
+- **MSTL** (*multiple seasonal-trend decomposition using LOESS*): first it divides the
+  series into parts, then it forecasts each part.
+
+```
+  demand  =  trend  +  daily cycle  +  weekly cycle  +  rest
+             (slow)    (24 hours)      (168 hours)      (forecast with ETS)
+```
+
+  MSTL removes the daily and the weekly cycle with STL (a smoothing method), forecasts
+  the rest with ETS, and adds the cycles back. It knows both cycles, so it is the
+  strongest of the three baselines on this data.
+
+These baselines are fitted again on each 12-week history: they learn from the data of
+this project, which the TSFMs do not do. They do not get the holiday indicator (they have
+no input for it). If a TSFM is not clearly better than MSTL, the simpler method is
+enough. For how each baseline works in detail, see
+[08-classical-baselines.md](08-classical-baselines.md).
+
+## Is a difference real? Paired comparisons
+
+Two models get a WQL of 3.18% and 3.21%. Is the first model better, or is the difference
+chance? If you score the models on a different set of weeks, the order could change.
+A statistical test answers this question: how probable is a difference this large if the
+two models were in fact equally good?
+
+### Why the comparison must be paired
+
+The loss of a forecast changes much from one week to the next. The week of Christmas is
+difficult for every model, and a usual week in November is easy for every model. This
+difference between weeks is much larger than the difference between models.
+
+```
+           week 1   week 2   week 3 (Christmas)   week 4
+model A     2.9      3.1          8.0               2.7
+model B     3.0      3.3          8.4               2.8
+A − B      −0.1     −0.2         −0.4              −0.1     ← A is better every week
+```
+
+If you compare only the two averages (4.18 against 4.38), the large changes between weeks
+hide the difference. But the two models forecast **the same weeks**. Thus you compare them
+week by week: for each week, calculate the difference in loss, A − B. Here A is better in
+every week, which is strong evidence, even though the averages are close. This is a
+**paired comparison**.
+
+### Win counts
+
+The simplest paired comparison counts the weeks in which each model has the lower loss.
+If two models are equally good, each one wins about half of the weeks, like a coin. A
+result of 21 wins in 22 weeks is very improbable for a coin. A result of 13 wins in 22
+weeks is quite probable for a coin, so it is no evidence. A win count shows *how often* a
+model is better, but not *by how much*.
+
+### The Diebold–Mariano test
+
+The **Diebold–Mariano test** (Diebold and Mariano, 1995) is the standard test to compare
+the accuracy of two forecasts. It uses the size of the differences, not only their sign:
+
+1. For each week *t*, calculate the difference in loss: *d<sub>t</sub>* = loss of A − loss of
+   B.
+2. Calculate the mean of the differences, *d̄*. If the models are equally good, the true
+   mean is 0.
+3. Calculate the **standard error** of *d̄*: how much *d̄* would change if you used other
+   weeks. It is large when the differences change much from week to week, and small when
+   there are many weeks.
+4. The test statistic is *d̄* / standard error. A value far from 0 (for example below −2
+   or above 2) means that the difference is larger than the usual changes.
+5. The **p-value** is the probability of a statistic at least this far from 0 if the
+   models were equally good. A small p-value (usually below 0.05, that is 5%) means that
+   the difference is probably real.
+
+```mermaid
+flowchart LR
+    W["Loss of each model<br/>for each week"] --> D["Differences A − B,<br/>week by week"]
+    D --> S["Statistic = mean difference /<br/>standard error"]
+    S --> P{"p-value < 0.05?"}
+    P -- "yes" --> R["The difference is probably real"]
+    P -- "no" --> N["No clear difference:<br/>it can be chance"]
+```
+
+Some details of this project:
+
+- **The loss is the weekly WQL**, averaged over the five countries. The countries are
+  not independent: in the same week they share holidays and weather. Thus one week is one
+  observation.
+- **Each week is forecast one block ahead**, so the differences of consecutive weeks are
+  taken as uncorrelated (the test's *horizon* is 1). For longer horizons the test corrects
+  for the correlation.
+- **There are only about 22 usual weeks**, so the project uses the small-sample correction
+  of Harvey, Leybourne and Newbold (1997), with a *t* distribution.
+- **Many pairs are tested.** With six models there are 15 pairs. If you do 15 tests at
+  5%, one false "real difference" is not improbable. The **Holm correction** makes the
+  p-values larger to correct for this, and the verdicts use the corrected p-values.
+
+A large p-value does not prove that two models are equal. It only says that these 22
+weeks do not show a clear difference. More data (more weeks, more series) can show a
+smaller difference.
+
+In this project, TimesFM 3 (WQL 3.18%) and Timestral (3.21%) show no clear difference:
+the p-value is 0.72, and Timestral even has the lower loss in 14 of the 22 weeks. TimesFM
+3's lower average comes from one week, Christmas. But every TSFM against every classical
+baseline is a clear difference (p ≤ 0.004). See
+[06-comparing-models.md](06-comparing-models.md#2-is-the-difference-real).
+
 ## Calibration: can the ranges be trusted?
 
 A probabilistic forecast makes a promise: "the real value will fall inside my 80%
@@ -581,6 +703,8 @@ results, pitfalls), see [04-anomaly-detection.md](04-anomaly-detection.md).
 | **Covariate** | Extra information that helps the forecast but isn't forecast itself |
 | **Coverage** | The share of real values that landed inside an interval |
 | **Cutoff** | In a backtest, the last day the model may see |
+| **Diebold–Mariano test** | A test of whether two forecasts have different accuracy, from their loss differences on the same periods |
+| **ETS** / exponential smoothing | A classical forecast: a weighted average of the past, with level, trend and seasonal parts |
 | **Foundation model** | A model trained once on broad data, then used on many tasks |
 | **GW / MW** | Gigawatt / megawatt: power, how much electricity is used at one moment (1 GW = 1,000 MW) |
 | **GWh / MWh** | Gigawatt-hour / megawatt-hour: energy, power used over time |
@@ -595,11 +719,15 @@ results, pitfalls), see [04-anomaly-detection.md](04-anomaly-detection.md).
 | **MAPE** | Mean absolute percentage error: average size of the misses, as % of the actual value |
 | **Mean** | The average: total divided by count |
 | **Median** | The middle value; the 50% quantile |
+| **MSTL** | A classical forecast that removes several seasonal cycles (daily, weekly), forecasts the rest and adds the cycles back |
 | **Multivariate** | Several measurements per time step, forecast together |
 | **NaN** | "Not a number"; marks a missing value |
+| **Paired comparison** | Comparing two models period by period on the same periods, not only their averages |
 | **Parameters** | The numbers a model learned in training; a rough measure of its size |
 | **Past-only covariate** | A covariate known only up to the present |
+| **Pinball loss** | The score of one quantile: large when the actual value is on the side that the quantile said was improbable |
 | **Probabilistic forecast** | A forecast that gives a range of likely values with their probabilities |
+| **p-value** | The probability of a result at least this extreme if there were no real difference; small means "probably real" |
 | **Quantile** | A value with a stated chance of not being exceeded (90% quantile: exceeded 1 time in 10) |
 | **Rolling forecast** / walk-forward | Forecasting each period only from the data before it, period after period |
 | **Seasonality** | A pattern that repeats on a fixed cycle (daily, weekly, yearly) |
@@ -610,5 +738,6 @@ results, pitfalls), see [04-anomaly-detection.md](04-anomaly-detection.md).
 | **Time step** | One slot in a time series (one hour, one day) |
 | **Trend** | A slow, sustained rise or fall |
 | **Univariate** | One measurement per time step |
+| **WQL** | Weighted quantile loss: the pinball loss of several quantiles, as % of the actual values; scores the median and the range together |
 | **Variate** | One of the measurements in a multivariate series |
 | **Zero-shot** | Using a model on new data without training it further |

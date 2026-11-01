@@ -41,6 +41,8 @@ The other notes in this folder:
   better.
 - [07-further-reading.md](07-further-reading.md): books, papers, benchmarks and tools
   about forecasting, evaluation, anomaly detection and time series foundation models.
+- [08-classical-baselines.md](08-classical-baselines.md): how the three classical
+  baselines (seasonal naive, ETS, MSTL) work, how the project runs them, and their results.
 
 ## Quick start
 
@@ -49,7 +51,7 @@ uv sync                                   # installs timestral, chronos-forecast
 uv run main.py signal                     # seconds, no model
 uv run main.py forecast                   # ~1 min
 uv run main.py anomalies                  # ~2 min
-uv run main.py compare                    # ~5 min: every model, scored side by side
+uv run main.py compare                    # ~10 min: 3 TSFMs and 3 baselines, scored and tested
 ```
 
 The first run downloads two things once: the data (124 MB, into `data/`) and the
@@ -58,9 +60,9 @@ Air (M1, 2020, 16 GB), on the CPU. Every command prints a summary and writes a C
 
 ```
 uv run main.py signal [--country IT] [--start 2020-02-17] [--end 2020-03-29] [--threshold 25000]
-uv run main.py [--countries DE,FR,IT,ES,GB] [--model timestral|chronos-2|timesfm-3|HF_ID] [--device cpu] [--no-holidays] forecast [--days 30]
+uv run main.py [--countries DE,FR,IT,ES,GB] [--model timestral|chronos-2|timesfm-3|seasonal-naive|ets|mstl|HF_ID] [--device cpu] [--no-holidays] forecast [--days 30]
 uv run main.py [...] anomalies [--start 2019-09-30] [--end YYYY-MM-DD] [--horizon 168] [--context 2048] [--min-hours 6]
-uv run main.py [...] compare   [--models timestral,chronos-2,timesfm-3] [--days 30] [same options as anomalies]
+uv run main.py [...] compare   [--models timestral,chronos-2,timesfm-3,seasonal-naive,ets,mstl] [--days 30] [same options as anomalies]
 ```
 
 `--model mistralai/Timestral-28M` is about 6x faster and only slightly less accurate
